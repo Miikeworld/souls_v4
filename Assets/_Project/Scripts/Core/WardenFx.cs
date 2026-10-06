@@ -31,7 +31,7 @@ public sealed class WardenFx : MonoBehaviour
     private static Mesh bladeMesh, chipMesh, dustMesh, shardMesh, discMesh, quadMesh;
 
     private Material glow;
-    private ParticleSystem chips, dust, shardsFall, shardsRise;
+    private ParticleSystem chips, dust, shardsFall, shardsRise, sparks;
     private readonly List<Stroke> strokes = new List<Stroke>();
     private readonly List<PeakDisc> peaks = new List<PeakDisc>();
     private PlayerCameraController cam;
@@ -81,6 +81,7 @@ public sealed class WardenFx : MonoBehaviour
         dust = MakeSystem("Warden dust", DustMesh, -0.05f, 300, 4f, true);
         shardsFall = MakeSystem("Warden shards", ShardMesh, 1.1f, 400, 2f, false);
         shardsRise = MakeSystem("Warden rising shards", ShardMesh, -0.12f, 400, 1.4f, false);
+        sparks = MakeSparks();
         for (var i = 0; i < 48; i++) strokes.Add(NewStroke());
         for (var i = 0; i < 6; i++)
         {
@@ -143,6 +144,47 @@ public sealed class WardenFx : MonoBehaviour
         r.renderMode = ParticleSystemRenderMode.Mesh;
         r.mesh = mesh;
         r.alignment = ParticleSystemRenderSpace.World;
+        r.sharedMaterial = glow;
+        r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        r.receiveShadows = false;
+        ps.Play();
+        return ps;
+    }
+
+    /// <summary>Stretched square sparks (the HitFx read at arena scale): vertex colour
+    /// only, stretched along velocity, gone in a third of a second.</summary>
+    private ParticleSystem MakeSparks()
+    {
+        var go = new GameObject("Warden sparks");
+        go.transform.SetParent(transform, false);
+        var ps = go.AddComponent<ParticleSystem>();
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+        var main = ps.main;
+        main.playOnAwake = false;
+        main.loop = true;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 300;
+        main.startSpeed = 0f;
+        main.startLifetime = 0.3f;
+        main.gravityModifier = 1.6f;
+        var emission = ps.emission;
+        emission.enabled = false;
+        var shape = ps.shape;
+        shape.enabled = false;
+        var col = ps.colorOverLifetime;
+        col.enabled = true;
+        var g = new Gradient { mode = GradientMode.Fixed };
+        g.SetKeys(new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(new Color(1f, 0.35f, 0.3f), 0.35f),
+                          new GradientColorKey(Crimson, 0.7f) },
+                  new[] { new GradientAlphaKey(1f, 0.35f), new GradientAlphaKey(0.7f, 0.7f), new GradientAlphaKey(0.3f, 1f) });
+        col.color = g;
+        var limit = ps.limitVelocityOverLifetime;
+        limit.enabled = true;
+        limit.drag = 2.5f;
+        var r = go.GetComponent<ParticleSystemRenderer>();
+        r.renderMode = ParticleSystemRenderMode.Stretch;
+        r.velocityScale = 0.035f;
+        r.lengthScale = 1.6f;
         r.sharedMaterial = glow;
         r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         r.receiveShadows = false;
@@ -382,6 +424,80 @@ public sealed class WardenFx : MonoBehaviour
         }
     }
 
+    /// <summary>Metal on stone: pale sparks thrown off a surface along <paramref name="normal"/>
+    /// (and the blade's travel, via <paramref name="bias"/>). Clears in ~0.35s.</summary>
+    public static void Sparks(Vector3 point, Vector3 normal, int count, float speed, Vector3? bias = null)
+    {
+        var h = Host;
+        var n = normal.sqrMagnitude > 1e-4f ? normal.normalized : Vector3.up;
+        for (var i = 0; i < count; i++)
+        {
+            var d = (n + Random.insideUnitSphere * 0.9f + (bias ?? Vector3.zero)).normalized;
+            h.sparks.Emit(new ParticleSystem.EmitParams
+            {
+                position = point + Random.insideUnitSphere * 0.06f,
+                velocity = d * speed * Random.Range(0.5f, 1.2f),
+                startColor = Color.white,
+                startSize = Random.Range(0.035f, 0.07f),
+                startLifetime = Random.Range(0.18f, 0.36f),
+            }, 1);
+        }
+    }
+
+    /// <summary>A gouge cut into the floor by a blade: a dark ink-edged scar with a
+    /// hot crimson core that cools first. Both are gone inside <paramref name="life"/>.</summary>
+    public static void Groove(IList<Vector3> points, float width = 0.12f, float life = 1.4f)
+    {
+        if (points == null || points.Count < 2) return;
+        Line(points, new Color(0.14f, 0.05f, 0.06f, 1f), width, life, 0.05f, 0.55f);
+        Line(points, Crimson, width * 0.35f, life * 0.45f, 0.05f, 0.35f);
+    }
+
+    /// <summary>The pre-strike glint on a blade: a 2-frame pale disc and a four-ray
+    /// star in the camera plane — "this edge is about to move".</summary>
+    public static void Glint(Vector3 point, float size = 1f)
+    {
+        Peak(point, 0.28f * size);
+        var c = Camera.main;
+        var n = c != null ? (c.transform.position - point).normalized : Vector3.forward;
+        var up = Vector3.ProjectOnPlane(Vector3.up, n);
+        if (up.sqrMagnitude < 0.01f) up = Vector3.ProjectOnPlane(Vector3.right, n);
+        up.Normalize();
+        var side = Vector3.Cross(n, up);
+        var pts = new Vector3[2];
+        for (var i = 0; i < 4; i++)
+        {
+            var d = (i % 2 == 0 ? up : side) * (i < 2 ? 1f : -1f);
+            var len = (i % 2 == 0 ? 0.75f : 0.45f) * size;
+            pts[0] = point + d * 0.05f * size;
+            pts[1] = point + d * len;
+            Line(pts, i % 2 == 0 ? Color.white : PaleRed, 0.035f * size, 0.2f, 0.04f, 0.2f, true);
+        }
+    }
+
+    /// <summary>A swing crescent: a faceted arc stroke drawn on fast around
+    /// <paramref name="centre"/> in the plane of <paramref name="normal"/>, starting
+    /// at <paramref name="from"/> and sweeping <paramref name="arcDeg"/> (sign = direction).</summary>
+    public static void Crescent(Vector3 centre, Vector3 normal, Vector3 from, float radius, float arcDeg, Color col,
+                                float width = 0.12f, float life = 0.3f, float grow = 0.08f)
+    {
+        var n = normal.sqrMagnitude > 1e-4f ? normal.normalized : Vector3.up;
+        var f = Vector3.ProjectOnPlane(from, n);
+        if (f.sqrMagnitude < 1e-4f) return;
+        f.Normalize();
+        var steps = Mathf.Clamp(Mathf.CeilToInt(Mathf.Abs(arcDeg) / 9f), 3, 40);
+        var pts = new Vector3[steps + 1];
+        for (var i = 0; i <= steps; i++)
+        {
+            var k = i / (float)steps;
+            // Thick in the middle of the arc, tapering at both ends is the ink's job;
+            // the radius bulges a touch so it reads as a cut, not a ring.
+            var r = radius * (1f + 0.06f * Mathf.Sin(k * Mathf.PI));
+            pts[i] = centre + Quaternion.AngleAxis(arcDeg * k, n) * f * r;
+        }
+        Line(pts, col, width, life, grow, 0.3f);
+    }
+
     /// <summary>The pale-red peak: a camera-facing faceted disc that lives exactly two
     /// rendered frames, then the crimson ring carries the read.</summary>
     public static void Peak(Vector3 point, float radius)
@@ -418,6 +534,7 @@ public sealed class WardenFx : MonoBehaviour
         Ring(p + Vector3.up * 0.04f, Vector3.up, 0.3f * scale, 1.6f * scale, 0.18f, PaleRed, 0.12f * Mathf.Sqrt(scale), 24, 0.1f);
         Ring(p + Vector3.up * 0.05f, Vector3.up, 0.5f * scale, 2.6f * scale, 0.42f, Crimson, 0.14f * Mathf.Sqrt(scale), 24, 0.25f);
         if (scale >= 1.4f) Spikes(p + Vector3.up * 0.6f * scale, 9, 1.3f * scale, Crimson, 0.24f, 0.11f);
+        Sparks(p + Vector3.up * 0.08f, Vector3.up, Mathf.RoundToInt(5 * Mathf.Clamp(scale, 0.6f, 2.4f)), 5f * Mathf.Sqrt(scale));
         if (shake > 0f) Shake(shake);
         if (hitstop > 0f) HitStop(hitstop);
         yield return new WaitForSeconds(0.05f);

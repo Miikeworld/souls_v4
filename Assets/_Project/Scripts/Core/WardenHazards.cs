@@ -154,64 +154,110 @@ public sealed class EruptionSpike : MonoBehaviour
 }
 
 /// <summary>
-/// A summoned spectral sword: forms with a chime (shards converge, it scales
+/// A summoned spectral weapon: forms with a chime (shards converge, it scales
 /// in), holds wherever its owner parks it, swells before firing, then flies
 /// straight — never homing — leaving a thin crimson trail, sticks into the
-/// first solid surface and dissolves. One body hit per flight.
+/// first solid surface and dissolves in slices. One body hit per flight.
+/// <see cref="ArsenalKind.Blade"/> is the procedural faceted blade; every other
+/// kind is a baked Synty weapon (sword, greatsword, axe, spear, halberd, scythe)
+/// drawn as a crimson ghost with a pale wire rim and an ink silhouette
+/// (<see cref="WardenArsenal"/>). Spinning weapons (thrown axes, the wheel)
+/// turn about their middle; their hazard is a sphere around <see cref="Centre"/>.
 /// </summary>
 public sealed class SpectralBlade : MonoBehaviour
 {
     public enum Phase { Forming, Holding, Flying, Stuck, Dissolving }
 
-    public Phase State { get; private set; }
-    public float Scale => scale;
-    public Vector3 Tip => transform.position + transform.up * (1.55f * scale);
+    private static readonly int TintId = Shader.PropertyToID("_Tint");
+    private static readonly int RimId = Shader.PropertyToID("_Rim");
+    private static readonly int FadeId = Shader.PropertyToID("_Fade");
+    private static readonly int DissolveId = Shader.PropertyToID("_Dissolve");
 
-    private Transform visual;
+    public Phase State { get; private set; }
+    /// <summary>Legacy size: 1 = the 1.55 m crown blade.</summary>
+    public float Scale => length / 1.55f;
+    public float Length => length;
+    public ArsenalKind Kind => kind;
+    public bool Spinning => spinRate != 0f;
+    public Vector3 Tip => transform.position + transform.up * length;
+    public Vector3 Centre => transform.position + transform.up * (length * 0.5f);
+
+    private Transform spinner, visual;
     private MeshRenderer rend;
     private MaterialPropertyBlock mpb;
     private TrailRenderer trail;
+    private LineRenderer spine;
     private Transform ignore;
-    private float scale = 1f, t, formTime = 0.25f, glow, alpha = 1f;
-    private float speed, damage, maxDist, travelled;
-    private Vector3 dir;
+    private ArsenalKind kind;
+    private bool ghost;
+    private float length = 1.55f, visualScale = 1f, t, formTime = 0.25f, glow, alpha = 1f, dissolve;
+    private float speed, damage, maxDist, travelled, spinRate;
+    private Vector3 dir, spinAxis = Vector3.right;
     private bool hitPlayer;
 
+    /// <summary>The classic procedural blade (crown slots, rain, wall chase).</summary>
     public static SpectralBlade Spawn(Vector3 pos, Quaternion rot, float scale, Transform ignore, float formTime = 0.25f,
                                       bool chime = true, float chimePitch = 1f)
+        => Spawn(ArsenalKind.Blade, -1, 1.55f * scale, pos, rot, ignore, formTime, chime, chimePitch);
+
+    /// <summary>A weapon of <paramref name="kind"/>, <paramref name="length"/> metres grip → tip
+    /// (pivot at the grip, +Y to the tip). Variant -1 = random.</summary>
+    public static SpectralBlade Spawn(ArsenalKind kind, int variant, float length, Vector3 pos, Quaternion rot, Transform ignore,
+                                      float formTime = 0.25f, bool chime = true, float chimePitch = 1f)
     {
-        var go = new GameObject("Spectral blade");
+        var go = new GameObject("Spectral " + kind);
         go.transform.SetPositionAndRotation(pos, rot);
         var b = go.AddComponent<SpectralBlade>();
-        b.scale = scale;
+        b.kind = kind;
+        b.length = Mathf.Max(0.2f, length);
         b.ignore = ignore;
         b.formTime = Mathf.Max(0.01f, formTime);
-        b.Build();
+        b.Build(variant);
         WardenHazard.Track(go);
-        WardenFx.Converge(pos + rot * Vector3.up * 0.8f * scale, 10, 0.9f * scale, b.formTime, WardenFx.Crimson, Mathf.Sqrt(scale));
+        var size = Mathf.Sqrt(b.length / 1.55f);
+        WardenFx.Converge(pos + rot * Vector3.up * b.length * 0.5f, 10, 0.6f * b.length, b.formTime, WardenFx.Crimson, size);
         if (chime) WardenAudio.Play("chime", pos, 0.5f, chimePitch);
         return b;
     }
 
-    private void Build()
+    private void Build(int variant)
     {
+        spinner = new GameObject("Spinner").transform;
+        spinner.SetParent(transform, false);
         visual = new GameObject("Visual").transform;
-        visual.SetParent(transform, false);
-        visual.localScale = Vector3.zero;
-        visual.gameObject.AddComponent<MeshFilter>().sharedMesh = WardenFx.BladeMesh;
+        visual.SetParent(spinner, false);
+        var baked = WardenArsenal.Get(kind, variant);
+        ghost = baked != null;
+        visual.gameObject.AddComponent<MeshFilter>().sharedMesh = ghost ? baked : WardenFx.BladeMesh;
         rend = visual.gameObject.AddComponent<MeshRenderer>();
-        rend.sharedMaterial = WardenFx.GlowMaterial;
+        rend.sharedMaterial = ghost ? WardenArsenal.Material : WardenFx.GlowMaterial;
         rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         rend.receiveShadows = false;
+        visualScale = ghost ? length : length / 1.55f;
+        visual.localScale = Vector3.zero;
         mpb = new MaterialPropertyBlock();
+
+        // A thin hot spine down the blade: the weapon reads as a line of danger
+        // even face-on at 640 lines, where the ghost fill is faint by design.
+        var sgo = new GameObject("Spine");
+        sgo.transform.SetParent(transform, false);
+        spine = sgo.AddComponent<LineRenderer>();
+        spine.sharedMaterial = WardenFx.GlowMaterial;
+        spine.useWorldSpace = true;
+        spine.positionCount = 2;
+        spine.numCapVertices = 0;
+        spine.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        spine.receiveShadows = false;
+        spine.enabled = ghost;
+
         var tip = new GameObject("Trail");
-        tip.transform.SetParent(transform, false);
-        tip.transform.localPosition = Vector3.up * 1.45f * scale;
+        tip.transform.SetParent(visual, false);
+        tip.transform.localPosition = Vector3.up * (ghost ? 0.92f : 1.45f);
         trail = tip.AddComponent<TrailRenderer>();
         trail.sharedMaterial = WardenFx.GlowMaterial;
         trail.time = 0.2f;
         trail.minVertexDistance = 0.05f;
-        trail.widthMultiplier = 0.08f * Mathf.Sqrt(scale);
+        trail.widthMultiplier = 0.08f * Mathf.Sqrt(length / 1.55f);
         trail.widthCurve = AnimationCurve.Linear(0f, 1f, 1f, 0f);
         var g = new Gradient();
         g.SetKeys(new[] { new GradientColorKey(WardenFx.Crimson, 0f), new GradientColorKey(WardenFx.CrimsonDeep, 1f) },
@@ -226,6 +272,24 @@ public sealed class SpectralBlade : MonoBehaviour
     /// <summary>0..1 swell toward white — the "this one fires next" tell.</summary>
     public void SetGlow(float k) => glow = Mathf.Clamp01(k);
 
+    /// <summary>Spin the visual about its middle (thrown axes, the wheel). 0 stops and squares it up.</summary>
+    public void SetSpin(Vector3 localAxis, float degPerSec)
+    {
+        spinRate = degPerSec;
+        spinAxis = localAxis.sqrMagnitude > 1e-4f ? localAxis.normalized : Vector3.right;
+        if (degPerSec != 0f)
+        {
+            spinner.localPosition = Vector3.up * length * 0.5f;
+            visual.localPosition = Vector3.down * length * 0.5f;
+        }
+        else
+        {
+            spinner.localPosition = Vector3.zero;
+            spinner.localRotation = Quaternion.identity;
+            visual.localPosition = Vector3.zero;
+        }
+    }
+
     /// <summary>Turn the tip toward <paramref name="point"/> at a capped rate.</summary>
     public void TurnToward(Vector3 point, float degPerSec)
     {
@@ -233,7 +297,8 @@ public sealed class SpectralBlade : MonoBehaviour
         transform.rotation = Quaternion.RotateTowards(transform.rotation, want, degPerSec * Time.deltaTime);
     }
 
-    public void Fire(Vector3 direction, float speed, float damage, float maxDistance)
+    /// <param name="spin">End-over-end degrees per second (axes); 0 = flies point-first.</param>
+    public void Fire(Vector3 direction, float speed, float damage, float maxDistance, float spin = 0f)
     {
         if (State == Phase.Dissolving) return;
         dir = direction.sqrMagnitude > 1e-4f ? direction.normalized : Vector3.down;
@@ -241,22 +306,28 @@ public sealed class SpectralBlade : MonoBehaviour
         this.damage = damage;
         maxDist = maxDistance;
         travelled = 0f;
-        visual.localScale = Vector3.one * scale;
+        hitPlayer = false;
+        visual.localScale = Vector3.one * visualScale;
         transform.rotation = Quaternion.FromToRotation(Vector3.up, dir);
+        SetSpin(Vector3.right, spin);
         trail.Clear();
         trail.emitting = true;
         State = Phase.Flying;
-        WardenAudio.Play("swish", transform.position, 0.45f, 1.2f);
+        WardenAudio.Play("swish", transform.position, 0.45f, spin != 0f ? 0.8f : 1.2f);
     }
 
     /// <summary>Lodge the blade (point = where the tip ends up) — used by scripted drops.</summary>
     public void StickAt(Vector3 tipPoint, float embed = 0.25f)
     {
-        transform.position = tipPoint - transform.up * (1.55f * scale - embed * scale);
+        if (spinRate != 0f) SetSpin(Vector3.right, 0f);
+        transform.position = tipPoint - transform.up * (length - embed * length / 1.55f);
         trail.emitting = false;
         State = Phase.Stuck;
         t = 0f;
     }
+
+    /// <summary>Owner-driven weapons (wheels, impalers, the guillotine) park here; Update leaves them be.</summary>
+    public void Hold() { if (State == Phase.Flying || State == Phase.Stuck) State = Phase.Holding; trail.emitting = false; }
 
     public void Dissolve(float seconds = 0.3f)
     {
@@ -265,7 +336,7 @@ public sealed class SpectralBlade : MonoBehaviour
         t = 0f;
         formTime = Mathf.Max(0.05f, seconds);
         trail.emitting = false;
-        WardenFx.Shards(transform.position + transform.up * 0.8f * scale, 5, 1.1f, WardenFx.Crimson, rise: true, size: Mathf.Sqrt(scale));
+        WardenFx.Shards(Centre, 5, 1.1f, WardenFx.Crimson, rise: true, size: Mathf.Sqrt(length / 1.55f));
     }
 
     private void Update()
@@ -276,7 +347,7 @@ public sealed class SpectralBlade : MonoBehaviour
         {
             case Phase.Forming:
                 var k = Mathf.Clamp01(t / formTime);
-                visual.localScale = Vector3.one * scale * (k * k * (3f - 2f * k));
+                visual.localScale = Vector3.one * visualScale * (k * k * (3f - 2f * k));
                 if (k >= 1f) State = Phase.Holding;
                 break;
             case Phase.Flying:
@@ -289,44 +360,97 @@ public sealed class SpectralBlade : MonoBehaviour
                 var d = t / formTime;
                 if (d >= 1f) { Destroy(gameObject); return; }
                 alpha = WardenFx.Stepped(1f - d);
+                dissolve = d;
                 break;
         }
-        var c = Color.white * (1f + glow * 1.3f);
-        c.a = alpha;
-        mpb.SetColor("_Tint", c);
+        if (spinRate != 0f) spinner.localRotation = Quaternion.AngleAxis(spinRate * dt, spinAxis) * spinner.localRotation;
+        Paint();
+    }
+
+    private void Paint()
+    {
+        if (ghost)
+        {
+            var fill = WardenArsenal.Fill;
+            fill = Color.Lerp(fill, new Color(1f, 0.35f, 0.32f, fill.a), glow * 0.5f);
+            fill.a = Mathf.Min(0.8f, WardenArsenal.Fill.a + glow * 0.3f);
+            var rim = Color.Lerp(WardenArsenal.Rim, Color.white, glow * 0.7f) * (1f + glow * 0.8f);
+            rim.a = 1f;
+            mpb.SetColor(TintId, fill);
+            mpb.SetColor(RimId, rim);
+            mpb.SetFloat(FadeId, alpha);
+            mpb.SetFloat(DissolveId, dissolve);
+        }
+        else
+        {
+            var c = Color.white * (1f + glow * 1.3f);
+            c.a = alpha;
+            mpb.SetColor(TintId, c);
+        }
         rend.SetPropertyBlock(mpb);
+
+        if (!spine.enabled) return;
+        var a = visual.TransformPoint(Vector3.up * 0.08f);
+        var b2 = visual.TransformPoint(Vector3.up * 0.97f);
+        spine.SetPosition(0, a);
+        spine.SetPosition(1, b2);
+        var form = State == Phase.Forming ? Mathf.Clamp01(t / formTime) : 1f;
+        var w = 0.03f * Mathf.Sqrt(length) * (1f + glow * 0.9f) * form;
+        spine.startWidth = w;
+        spine.endWidth = w * 0.4f;
+        var sc = Color.Lerp(WardenFx.Crimson, WardenFx.PaleRed, glow * 0.8f);
+        sc.a = alpha * 0.9f;
+        spine.startColor = spine.endColor = sc;
     }
 
     private void Fly(float dt)
     {
         var step = speed * dt;
-        var tip0 = Tip;
+        var spinning = spinRate != 0f;
+        var from = spinning ? Centre : Tip;
+        var reach = spinning ? length * 0.5f : 0.05f;
         var stop = float.MaxValue;
         RaycastHit stopHit = default;
-        foreach (var h in Physics.RaycastAll(tip0, dir, step + 0.05f, ~0, QueryTriggerInteraction.Ignore))
+        foreach (var h in Physics.RaycastAll(from, dir, step + reach, ~0, QueryTriggerInteraction.Ignore))
         {
             if (Ignored(h.collider) || h.distance >= stop) continue;
             stop = h.distance;
             stopHit = h;
         }
-        var travel = Mathf.Min(step, stop);
-        var tip1 = tip0 + dir * travel;
-        if (!hitPlayer && damage > 0f && WardenHazard.SegmentToBody(tip0 - dir * 0.7f * scale, tip1) < 0.45f + 0.1f * scale)
+        var travel = Mathf.Min(step, Mathf.Max(0f, stop - reach + 0.05f));
+        var p1 = from + dir * travel;
+        if (!hitPlayer && damage > 0f)
         {
-            hitPlayer = true;
-            if (WardenHazard.Damage(damage, tip0)) WardenFx.Spikes(tip1, 6, 0.6f, WardenFx.Crimson, 0.16f, 0.06f);
+            var near = spinning
+                ? WardenHazard.SegmentToBody(from, p1) < length * 0.5f + 0.35f
+                : WardenHazard.SegmentToBody(from - dir * 0.45f * length, p1) < 0.42f + 0.06f * length;
+            if (near)
+            {
+                hitPlayer = true;
+                if (WardenHazard.Damage(damage, from)) WardenFx.Spikes(p1, 6, 0.6f, WardenFx.Crimson, 0.16f, 0.06f);
+            }
         }
         transform.position += dir * travel;
         travelled += travel;
         if (stop < float.MaxValue)
         {
-            StickAt(stopHit.point, 0.25f);
             var n = stopHit.normal;
-            WardenFx.Peak(stopHit.point + n * 0.2f, 0.35f * Mathf.Sqrt(scale));
-            WardenFx.Ring(stopHit.point + n * 0.03f, n, 0.12f, 0.75f * scale, 0.26f, WardenFx.Crimson, 0.06f, 12);
+            if (spinning)
+            {
+                // A thrown axe bites in head-first along its flight line.
+                transform.rotation = Quaternion.FromToRotation(Vector3.up, dir);
+                StickAt(stopHit.point, 0.35f);
+            }
+            else StickAt(stopHit.point, 0.25f);
+            var size = Mathf.Sqrt(length / 1.55f);
+            WardenFx.Peak(stopHit.point + n * 0.2f, 0.35f * size);
+            WardenFx.Ring(stopHit.point + n * 0.03f, n, 0.12f, 0.6f * length, 0.26f, WardenFx.Crimson, 0.06f, 12);
+            WardenFx.Sparks(stopHit.point, n, 5, 3.2f);
             WardenFx.Debris(stopHit.point, 3, 3f, 0.7f);
             WardenFx.Dust(stopHit.point, 2, 0.8f, 0.6f);
-            WardenAudio.Play("metalLight", stopHit.point, 0.55f, Random.Range(0.9f, 1.1f));
+            WardenAudio.Play(kind == ArsenalKind.Axe || kind == ArsenalKind.Greatsword ? "metal" : "metalLight",
+                             stopHit.point, 0.55f, Random.Range(0.9f, 1.1f));
+            CoreSanctum.Active?.StrikeAt(stopHit.collider, stopHit.point, dir, 0.25f * size);
         }
         else if (travelled >= maxDist) Dissolve();
     }
@@ -334,24 +458,27 @@ public sealed class SpectralBlade : MonoBehaviour
     private bool Ignored(Collider c)
         => (ignore != null && c.transform.IsChildOf(ignore))
            || c.GetComponentInParent<PlayerHealth>() != null
-           || c.GetComponentInParent<Health>() != null;
+           || c.GetComponentInParent<Health>() != null
+           || c.GetComponentInParent<SpectralBlade>() != null;
 }
 
 /// <summary>
-/// One falling blade of a sword rain: a crimson circle marks the exact spot
-/// <see cref="lead"/> seconds ahead (0.6–0.9s — readable, never boring), the
-/// blade waits overhead and drops to land as the circle peaks. Small strikes get
-/// a small flash, a puff and a few chips; only the giant one gets the full impact.
+/// One falling weapon of a sword rain, in three beats: the weapon forms in the
+/// sky FIRST (pointing down, glowing faintly), THEN its crimson circle appears on
+/// the exact spot <see cref="lead"/> seconds ahead (0.6–0.9s — readable, never
+/// boring), THEN it drops to land as the circle peaks. Small strikes get a small
+/// flash, a puff and a few chips; only the giant one gets the full impact.
 /// </summary>
 public sealed class RainStrike : MonoBehaviour
 {
     private Vector3 ground, top;
-    private float lead, radius, damage, scale, t, fall;
-    private bool big, dropping, landed;
+    private float lead, radius, damage, length, t, fall, formLead;
+    private bool big, dropping, landed, marked;
     private WardenMark mark;
     private SpectralBlade blade;
 
-    public static RainStrike Spawn(Vector3 ground, float lead, float radius, float damage, float scale, Transform owner, bool big = false)
+    public static RainStrike Spawn(Vector3 ground, float lead, float radius, float damage, float scale, Transform owner, bool big = false,
+                                   ArsenalKind kind = ArsenalKind.Blade)
     {
         var go = new GameObject(big ? "Judgment blade" : "Rain blade");
         var s = go.AddComponent<RainStrike>();
@@ -359,14 +486,13 @@ public sealed class RainStrike : MonoBehaviour
         s.lead = Mathf.Max(0.3f, lead);
         s.radius = radius;
         s.damage = damage;
-        s.scale = scale;
         s.big = big;
+        s.length = kind == ArsenalKind.Blade || !WardenArsenal.Has(kind) ? 1.55f * scale : WardenArsenal.NaturalLength(kind, scale * 0.85f);
         s.fall = big ? 0.38f : 0.18f;
-        s.top = ground + Vector3.up * (big ? 16f : 9f) + Vector3.up * 1.55f * scale;
-        s.mark = WardenMark.Circle(ground, radius, WardenFx.Crimson, big ? 0.14f : 0.07f, big ? 0.2f : 0.14f, big ? 48 : 24);
-        s.mark.SetAlpha(0f);
-        s.blade = SpectralBlade.Spawn(s.top, Quaternion.FromToRotation(Vector3.up, Vector3.down), scale, owner,
-                                      big ? 0.6f : 0.18f, chime: big, chimePitch: 0.7f);
+        s.formLead = big ? 0.9f : 0.32f;
+        s.top = ground + Vector3.up * (big ? 16f : 9f) + Vector3.up * s.length;
+        s.blade = SpectralBlade.Spawn(kind, -1, s.length, s.top, Quaternion.FromToRotation(Vector3.up, Vector3.down), owner,
+                                      big ? 0.6f : 0.2f, chime: big, chimePitch: 0.7f);
         WardenHazard.Track(go);
         return s;
     }
@@ -374,22 +500,37 @@ public sealed class RainStrike : MonoBehaviour
     private void Update()
     {
         t += Time.deltaTime;
-        var k = t / lead;
+        // Beat 1: the weapon hangs in the sky, already aimed.
+        if (t < formLead)
+        {
+            if (blade != null) blade.SetGlow(0.15f * t / formLead);
+            return;
+        }
+        // Beat 2: the mark appears where it will land.
+        if (!marked)
+        {
+            marked = true;
+            mark = WardenMark.Circle(ground, radius, WardenFx.Crimson, big ? 0.14f : 0.07f, big ? 0.2f : 0.14f, big ? 48 : 24);
+            mark.SetAlpha(0f);
+        }
+        var u = t - formLead;
+        var k = u / lead;
         if (!landed)
         {
-            mark.SetAlpha(Mathf.Clamp01(k * 2.5f));
+            mark.SetAlpha(Mathf.Clamp01(k * 4f));
             mark.SetPulse(k > 0.7f ? (k - 0.7f) / 0.3f : 0f);
-            if (blade != null) blade.SetGlow(k);
+            if (blade != null) blade.SetGlow(0.15f + 0.85f * k);
         }
-        if (!dropping && t >= lead - fall) dropping = true;
+        // Beat 3: the drop.
+        if (!dropping && u >= lead - fall) dropping = true;
         if (dropping && !landed && blade != null)
         {
-            var f = Mathf.Clamp01((t - (lead - fall)) / fall);
-            var tipGround = ground + Vector3.up * (1.55f * scale - 0.3f * scale);
-            blade.transform.position = Vector3.Lerp(top, tipGround, f * f);
+            var f = Mathf.Clamp01((u - (lead - fall)) / fall);
+            var gripAtLand = ground + Vector3.up * (length * 0.8f);
+            blade.transform.position = Vector3.Lerp(top, gripAtLand, f * f);
         }
-        if (!landed && t >= lead) Land();
-        if (landed && t >= lead + 0.55f)
+        if (!landed && u >= lead) Land();
+        if (landed && u >= lead + 0.55f)
         {
             if (blade != null) blade.Dissolve();
             Destroy(gameObject);
@@ -414,6 +555,7 @@ public sealed class RainStrike : MonoBehaviour
         {
             WardenFx.Peak(ground + Vector3.up * 0.3f, 0.32f);
             WardenFx.Ring(ground + Vector3.up * 0.04f, Vector3.up, radius * 0.4f, radius * 0.7f, 0.22f, WardenFx.Crimson, 0.06f, 16);
+            WardenFx.Sparks(ground + Vector3.up * 0.05f, Vector3.up, 4, 3f);
             WardenFx.Dust(ground, 2, 0.9f, 0.55f);
             WardenFx.Debris(ground, 3, 3.2f, 0.7f);
             WardenAudio.Play("metalLight", ground, 0.38f, Random.Range(0.85f, 1.15f));
@@ -440,7 +582,8 @@ public sealed class GraveBlade : MonoBehaviour
 
     public bool HasBurst => step >= Step.Burst;
 
-    public static GraveBlade Spawn(Vector3 ground, float scale, float radius, float damage, Transform owner)
+    public static GraveBlade Spawn(Vector3 ground, float scale, float radius, float damage, Transform owner,
+                                   ArsenalKind kind = ArsenalKind.Greatsword)
     {
         var go = new GameObject("Grave blade");
         var g = go.AddComponent<GraveBlade>();
@@ -451,7 +594,7 @@ public sealed class GraveBlade : MonoBehaviour
         var len = 1.55f * scale;
         g.buried = ground + Vector3.up * -0.1f;
         g.planted = ground + Vector3.up * len * 0.62f;
-        g.blade = SpectralBlade.Spawn(g.buried, Quaternion.FromToRotation(Vector3.up, Vector3.down), scale, owner, 0.05f, chime: false);
+        g.blade = SpectralBlade.Spawn(kind, -1, len, g.buried, Quaternion.FromToRotation(Vector3.up, Vector3.down), owner, 0.05f, chime: false);
         var lr = new GameObject("Glow").AddComponent<LineRenderer>();
         lr.transform.SetParent(go.transform, false);
         lr.sharedMaterial = WardenFx.GlowMaterial;
@@ -993,5 +1136,216 @@ public sealed class WallChase : MonoBehaviour
         WardenFx.Debris(point, 3, 3.5f, 0.6f, normal * 0.6f);
         WardenAudio.Play("metal", point, 0.6f, Random.Range(0.95f, 1.1f));
         if (WardenHazard.PointToBody(point) < 0.9f) WardenHazard.Damage(16f, point);
+    }
+}
+
+/// <summary>
+/// Reaper's Wheel: a spectral axe (or scythe) stood on its edge, spinning like a
+/// wheel, rolls down a lane. The lane strip shows first; the wheel revs in place
+/// (sparks spit off the floor), then launches. Jump it (it stands about a body
+/// high) or step out of the lane. It cuts a groove as it goes.
+/// </summary>
+public sealed class AxeWheel : MonoBehaviour
+{
+    private Vector3 origin, dir, side;
+    private float lane, warn, speed, damage, t, s, nextSpark, nextGroove;
+    private bool rolling, hit;
+    private SpectralBlade wheel;
+    private WardenMark strip;
+    private Vector3 lastGroove;
+
+    public static AxeWheel Spawn(Vector3 floorStart, Vector3 dir, float laneLength, float warn, float speed, float damage,
+                                 Transform owner, ArsenalKind kind = ArsenalKind.Axe, float size = 1f)
+    {
+        var go = new GameObject("Reaper wheel");
+        var w = go.AddComponent<AxeWheel>();
+        w.origin = floorStart;
+        w.dir = Vector3.ProjectOnPlane(dir, Vector3.up).normalized;
+        w.side = Vector3.Cross(Vector3.up, w.dir);
+        w.lane = laneLength;
+        w.warn = warn;
+        w.speed = speed;
+        w.damage = damage;
+        var len = WardenArsenal.NaturalLength(kind, size) * 0.95f;
+        w.wheel = SpectralBlade.Spawn(kind, -1, len, floorStart, Quaternion.LookRotation(w.dir, Vector3.up), owner, 0.25f, true, 0.8f);
+        w.wheel.SetSpin(Vector3.right, 260f);
+        w.strip = WardenMark.Line(floorStart, floorStart + w.dir * laneLength, 0.75f * size, WardenFx.Crimson, 0.05f, 0.12f);
+        w.lastGroove = floorStart;
+        WardenHazard.Track(go);
+        return w;
+    }
+
+    public float Height => wheel != null ? wheel.Length : 1.5f;
+
+    private void Update()
+    {
+        var dt = Time.deltaTime;
+        t += dt;
+        if (!rolling)
+        {
+            var k = Mathf.Clamp01(t / warn);
+            strip.SetPulse(k);
+            if (wheel != null)
+            {
+                wheel.SetGlow(k);
+                // Revving: the spin climbs as the launch nears.
+                wheel.SetSpin(Vector3.right, Mathf.Lerp(260f, 1100f, k * k));
+            }
+            if (t >= nextSpark)
+            {
+                nextSpark = t + 0.07f;
+                WardenFx.Sparks(origin + Vector3.up * 0.05f, Vector3.up - dir, 3, 3.5f);
+            }
+            if (t >= warn)
+            {
+                rolling = true;
+                WardenAudio.Play("swish", origin, 0.7f, 0.65f);
+                WardenFx.Dust(origin, 3, 1.2f, 0.7f);
+            }
+            return;
+        }
+        var prev = s;
+        s += speed * dt;
+        var p = origin + dir * Mathf.Min(s, lane);
+        if (wheel != null) wheel.transform.position = p;
+        if (t >= nextSpark)
+        {
+            nextSpark = t + 0.05f;
+            WardenFx.Sparks(p + Vector3.up * 0.04f, Vector3.up - dir * 1.2f, 2, 4f);
+        }
+        if (s >= nextGroove)
+        {
+            nextGroove = s + 1.2f;
+            WardenFx.Groove(new[] { lastGroove + Vector3.up * 0.03f, p + Vector3.up * 0.03f }, 0.1f, 1.1f);
+            lastGroove = p;
+        }
+        if (!hit && WardenHazard.Alive)
+        {
+            var rel = WardenHazard.Feet - origin;
+            var along = Vector3.Dot(rel, dir);
+            var lateral = Mathf.Abs(Vector3.Dot(rel, side));
+            if (along >= prev - 0.7f && along <= s + 0.7f && lateral <= 0.75f && rel.y < Height * 0.8f && !WardenHazard.WallRunning)
+            {
+                hit = true;
+                if (WardenHazard.Damage(damage, p)) WardenFx.Spikes(WardenHazard.Chest, 7, 0.8f, WardenFx.Crimson, 0.18f, 0.07f);
+            }
+        }
+        if (s >= lane)
+        {
+            strip.Release(0.15f);
+            if (wheel != null) wheel.Dissolve(0.25f);
+            Destroy(gameObject);
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (strip != null) strip.Release(0.1f);
+        if (wheel != null && wheel.State != SpectralBlade.Phase.Dissolving) wheel.Dissolve(0.2f);
+    }
+}
+
+/// <summary>
+/// Crimson Guillotine's colossal blade: a giant spectral axe hangs high over a
+/// marked strip, edge down, swelling — then drops in a blink and buries itself.
+/// A long crack and a groove carve the strip; the blade stays wedged for
+/// <c>stuck</c> seconds before it dissolves (the punish window is the Warden's,
+/// who is wedged with it).
+/// </summary>
+public sealed class GuillotineDrop : MonoBehaviour
+{
+    private Vector3 origin, dir, side;
+    private float extent, warn, stuck, damage, t, fall = 0.16f, halfWidth;
+    private bool dropped, landed;
+    private SpectralBlade blade;
+    private WardenMark strip;
+    private Vector3 hang, rest;
+
+    public bool Landed => landed;
+
+    public static GuillotineDrop Spawn(Vector3 floorStart, Vector3 dir, float extent, float warn, float stuck, float damage,
+                                       Transform owner, ArsenalKind kind = ArsenalKind.Axe)
+    {
+        var go = new GameObject("Crimson guillotine");
+        var g = go.AddComponent<GuillotineDrop>();
+        g.origin = floorStart;
+        g.dir = Vector3.ProjectOnPlane(dir, Vector3.up).normalized;
+        g.side = Vector3.Cross(Vector3.up, g.dir);
+        g.extent = extent;
+        g.warn = warn;
+        g.stuck = stuck;
+        g.damage = damage;
+        g.halfWidth = 1.05f;
+        var len = 6.5f;
+        var mid = floorStart + g.dir * extent * 0.55f;
+        // Edge down, flat face across the strip: local +Y (tip/head) = world down, local X (the blade's width) along the strip.
+        var rot = Quaternion.LookRotation(g.side, Vector3.down);
+        g.hang = mid + Vector3.up * (len + 6f);
+        g.rest = mid + Vector3.up * (len * 0.72f);
+        g.blade = SpectralBlade.Spawn(kind, -1, len, g.hang, rot, owner, 0.5f, true, 0.55f);
+        g.strip = WardenMark.Line(floorStart, floorStart + g.dir * extent, g.halfWidth, WardenFx.Crimson, 0.08f, 0.16f);
+        WardenHazard.Track(go);
+        return g;
+    }
+
+    private void Update()
+    {
+        var dt = Time.deltaTime;
+        t += dt;
+        if (!dropped)
+        {
+            var k = Mathf.Clamp01(t / warn);
+            strip.SetPulse(k);
+            if (blade != null)
+            {
+                blade.SetGlow(k);
+                // A slow lift as it gathers — the drop has somewhere to fall from.
+                blade.transform.position = hang + Vector3.up * (0.8f * k * k) + Random.insideUnitSphere * 0.03f * k;
+            }
+            if (t >= warn) { dropped = true; t = 0f; }
+            return;
+        }
+        if (!landed)
+        {
+            var f = Mathf.Clamp01(t / fall);
+            if (blade != null) blade.transform.position = Vector3.Lerp(hang + Vector3.up * 0.8f, rest, f * f);
+            if (f >= 1f) Land();
+            return;
+        }
+        if (t >= stuck)
+        {
+            if (blade != null) blade.Dissolve(0.4f);
+            Destroy(gameObject);
+        }
+    }
+
+    private void Land()
+    {
+        landed = true;
+        t = 0f;
+        strip.Release(0.15f);
+        var mid = origin + dir * extent * 0.55f;
+        var rel = WardenHazard.Feet - origin;
+        var along = Vector3.Dot(rel, dir);
+        if (along >= -0.5f && along <= extent + 0.5f && Mathf.Abs(Vector3.Dot(rel, side)) <= halfWidth && rel.y < 4f)
+            WardenHazard.Damage(damage, mid);
+        WardenFx.Impact(mid, 2.6f, 0.6f, 0.09f, 14, 1.4f, 0f);
+        var groove = new List<Vector3>();
+        for (var d = 0f; d <= extent; d += 0.8f)
+            groove.Add(origin + dir * d + side * Random.Range(-0.12f, 0.12f) + Vector3.up * 0.04f);
+        WardenFx.Groove(groove, 0.34f, 2.2f);
+        WardenFx.Cracks(mid, 6, extent * 0.4f, WardenFx.Crimson, 0.12f, 1.6f, dir, 40f);
+        for (var d = 0.5f; d <= extent; d += 1.6f)
+            WardenFx.Sparks(origin + dir * d + Vector3.up * 0.05f, Vector3.up, 4, 5f, side * (Random.value < 0.5f ? 1f : -1f));
+        WardenAudio.Play("boom", mid, 1f, 0.75f);
+        WardenAudio.Play("metal", mid, 1f, 0.6f);
+        WardenAudio.Play("sub", mid, 1f, 1f);
+        CoreSanctum.Active?.StrikeLine(origin, dir, extent, halfWidth + 0.6f, 1.2f);
+        if (blade != null) blade.Hold();
+    }
+
+    private void OnDestroy()
+    {
+        if (strip != null) strip.Release(0.1f);
     }
 }

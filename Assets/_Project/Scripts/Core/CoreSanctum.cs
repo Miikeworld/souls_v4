@@ -12,6 +12,10 @@ using UnityEngine;
 ///             void as wall-run runways; pillars and debris float.
 ///   Finale  — <see cref="Ascend"/> lifts everything with the boss,
 ///             <see cref="Freeze"/> holds it, <see cref="Crash"/> drops it.
+///   Always  — the room takes the Warden's misses: <see cref="StrikeAt"/> /
+///             <see cref="StrikeLine"/> / <see cref="StrikeRadius"/> chip and
+///             crack the pillars; enough weight topples one, which crashes
+///             down and crumbles (a missed greatsword is never weightless).
 /// Purple Corestone (<see cref="ChargeWalls"/>) = the suit can use this;
 /// <see cref="SetFlood"/> washes every floor surface crimson. Everything returns
 /// home on <see cref="ResetArena"/> (player death / rest).
@@ -58,7 +62,8 @@ public sealed class CoreSanctum : MonoBehaviour
         public Vector3 fromPos, toPos;
         public Quaternion fromRot, toRot;
         public float t0, dur;
-        public int motion;          // 0 home, 1 tearing, 2 hanging (shattered pose), 3 falling, 4 gone, 5 landed
+        public int motion;          // 0 home, 1 tearing, 2 hanging (shattered pose), 3 falling, 4 gone, 5 landed, 6 toppling
+        public float hp, height;
         public float vy, bob;
         public Vector3 spin;
         public float liftSeed;
@@ -67,7 +72,9 @@ public sealed class CoreSanctum : MonoBehaviour
         public readonly List<MeshRenderer> overlays = new List<MeshRenderer>();
     }
 
-    private const int Home = 0, Tearing = 1, Hanging = 2, Falling = 3, Gone = 4, Landed = 5;
+    private const int Home = 0, Tearing = 1, Hanging = 2, Falling = 3, Gone = 4, Landed = 5, Toppling = 6;
+    private const float PillarHp = 3f;
+    private readonly Dictionary<Transform, int> pieceOf = new Dictionary<Transform, int>();
 
     private Run[] runs;
     private MaterialPropertyBlock mpb, floodBlock;
@@ -104,6 +111,13 @@ public sealed class CoreSanctum : MonoBehaviour
                 r.collidersOn = new bool[r.colliders.Length];
                 for (var c = 0; c < r.colliders.Length; c++) r.collidersOn[c] = r.colliders[c].enabled;
                 if (p.walkable) AddOverlays(p.root, r.overlays);
+                pieceOf[p.root] = i;
+                if (p.role == Role.Pillar)
+                {
+                    r.hp = PillarHp;
+                    var cap = p.root.GetComponent<CapsuleCollider>();
+                    r.height = cap != null ? cap.height : 6f;
+                }
                 var surf = p.role == Role.WallSlab ? p.root.GetComponentInChildren<WallRunSurface>(true) : null;
                 if (surf != null) runWalls.Add(surf);
             }
@@ -166,6 +180,7 @@ public sealed class CoreSanctum : MonoBehaviour
             var p = pieces[i];
             if (p?.root == null || p.role == Role.Static) continue;
             var r = runs[i];
+            if (r.motion == Gone || r.motion == Toppling) continue;   // already smashed by a miss
             // Pieces that only exist once the floor breaks (torn chunks) wake up here.
             if (!p.root.gameObject.activeSelf) p.root.gameObject.SetActive(true);
             r.fromPos = p.root.position;
@@ -233,7 +248,7 @@ public sealed class CoreSanctum : MonoBehaviour
             var p = pieces[i];
             var r = runs[i];
             if (p?.root == null || p.role == Role.Static || p.role == Role.Break) continue;
-            if (r.motion == Gone || r.motion == Landed) continue;
+            if (r.motion == Gone || r.motion == Landed || r.motion == Toppling) continue;
             r.motion = Falling;
             r.vy = 0f;
             r.t0 = Time.time + Random.Range(0f, 0.35f);
@@ -262,6 +277,7 @@ public sealed class CoreSanctum : MonoBehaviour
             r.motion = Home;
             r.bob = 0f;
             r.vy = 0f;
+            if (p.role == Role.Pillar) r.hp = PillarHp;
         }
         foreach (var w in runWalls) if (w != null) w.Charge = 0f;
         ApplyVeins();
@@ -314,6 +330,141 @@ public sealed class CoreSanctum : MonoBehaviour
         if (flat.magnitude <= max) return p;
         flat = flat.normalized * max;
         return new Vector3(Center.x + flat.x, p.y, Center.z + flat.y);
+    }
+
+    // ------------------------------------------------------------------ the room takes the hits
+
+    /// <summary>A blade, weapon or wave struck <paramref name="c"/> at <paramref name="point"/>.
+    /// Pillars chip and crack; past their weight they topple along <paramref name="dir"/>.
+    /// True when a pillar took it.</summary>
+    public bool StrikeAt(Collider c, Vector3 point, Vector3 dir, float force)
+    {
+        if (c == null || force <= 0f) return false;
+        var i = PieceIndex(c.transform);
+        if (i < 0 || pieces[i].role != Role.Pillar || runs[i].motion != Home) return false;
+        Damage(i, point, dir, force);
+        return true;
+    }
+
+    /// <summary>Everything along a strip (Worldsplitter's crack, the guillotine, a wave fin).</summary>
+    public void StrikeLine(Vector3 origin, Vector3 dir, float length, float halfWidth, float force)
+    {
+        dir = Vector3.ProjectOnPlane(dir, Vector3.up);
+        if (dir.sqrMagnitude < 1e-4f || force <= 0f) return;
+        dir.Normalize();
+        for (var i = 0; i < pieces.Length; i++)
+        {
+            var p = pieces[i];
+            if (p?.root == null || p.role != Role.Pillar || runs[i].motion != Home) continue;
+            var rel = p.root.position - origin;
+            var along = Vector3.Dot(rel, dir);
+            if (along < -1f || along > length + 1f) continue;
+            var lateral = Vector3.ProjectOnPlane(rel - dir * along, Vector3.up).magnitude;
+            if (lateral > halfWidth + 0.8f) continue;
+            var hitPoint = p.root.position + Vector3.up * 1.2f - dir * 0.7f;
+            Damage(i, hitPoint, dir, force);
+        }
+    }
+
+    /// <summary>Everything within <paramref name="radius"/> of <paramref name="centre"/> (slams, landings, rings).</summary>
+    public void StrikeRadius(Vector3 centre, float radius, float force)
+    {
+        if (force <= 0f) return;
+        for (var i = 0; i < pieces.Length; i++)
+        {
+            var p = pieces[i];
+            if (p?.root == null || p.role != Role.Pillar || runs[i].motion != Home) continue;
+            var rel = Vector3.ProjectOnPlane(p.root.position - centre, Vector3.up);
+            if (rel.magnitude > radius + 0.8f) continue;
+            var outward = rel.sqrMagnitude > 0.01f ? rel.normalized : Vector3.forward;
+            Damage(i, p.root.position + Vector3.up * 1f - outward * 0.7f, outward, force * Mathf.Lerp(1f, 0.5f, rel.magnitude / Mathf.Max(1f, radius)));
+        }
+    }
+
+    /// <summary>Phase 2's first sign: every standing pillar cracks (a small strike each).</summary>
+    public void CrackPillars()
+    {
+        for (var i = 0; i < pieces.Length; i++)
+        {
+            var p = pieces[i];
+            if (p?.root == null || p.role != Role.Pillar || runs[i].motion != Home) continue;
+            var toCentre = Vector3.ProjectOnPlane(Center - p.root.position, Vector3.up).normalized;
+            Damage(i, p.root.position + Vector3.up * Random.Range(1.5f, 4f) + toCentre * 0.72f, -toCentre, 0.4f);
+        }
+    }
+
+    private int PieceIndex(Transform t)
+    {
+        for (var x = t; x != null; x = x.parent)
+            if (pieceOf.TryGetValue(x, out var i)) return i;
+        return -1;
+    }
+
+    private void Damage(int i, Vector3 point, Vector3 dir, float force)
+    {
+        var p = pieces[i];
+        var r = runs[i];
+        r.hp -= force;
+        var outward = Vector3.ProjectOnPlane(point - p.root.position, Vector3.up);
+        var n = outward.sqrMagnitude > 1e-4f ? outward.normalized : -dir;
+        WardenFx.Debris(point, Mathf.RoundToInt(3 + 4 * force), 4.5f, 0.8f + 0.3f * force, n * 0.8f);
+        WardenFx.Dust(point, 2 + Mathf.RoundToInt(2 * force), 0.9f, 0.7f);
+        WardenFx.Sparks(point, n, 4, 3.5f);
+        // Cracks climbing the face from the hit (vertical-ish, on the pillar surface).
+        var crack = new List<Vector3> { point + n * 0.03f };
+        var c = point + n * 0.03f;
+        for (var k = 0; k < 5; k++)
+        {
+            c += Vector3.up * Random.Range(-0.45f, 0.55f) + Vector3.Cross(Vector3.up, n) * Random.Range(-0.25f, 0.25f);
+            var flat = Vector3.ProjectOnPlane(c - p.root.position, Vector3.up).normalized;
+            c = new Vector3(p.root.position.x, c.y, p.root.position.z) + flat * 0.74f;
+            crack.Add(c);
+        }
+        WardenFx.Line(crack, WardenFx.Crimson, 0.05f, 1.2f, 0.1f, 0.5f);
+        WardenAudio.Play("stone", point, Mathf.Clamp01(0.4f + 0.3f * force), Random.Range(0.8f, 1.05f));
+        if (r.hp <= 0f) StartCoroutine(Topple(i, dir));
+        else StartCoroutine(Jolt(p.visual != null ? p.visual : p.root, 0.04f * force, 0.25f));
+    }
+
+    /// <summary>The pillar goes: a creak, a fall that accelerates about its base,
+    /// a crash along its whole length — then it crumbles to nothing.</summary>
+    private IEnumerator Topple(int i, Vector3 push)
+    {
+        var p = pieces[i];
+        var r = runs[i];
+        r.motion = Toppling;
+        foreach (var c in r.colliders) if (c != null) c.enabled = false;
+        var flat = Vector3.ProjectOnPlane(push, Vector3.up);
+        if (flat.sqrMagnitude < 1e-4f) flat = Vector3.ProjectOnPlane(p.root.position - Center, Vector3.up);
+        flat = flat.sqrMagnitude > 1e-4f ? flat.normalized : Vector3.forward;
+        var axis = Vector3.Cross(Vector3.up, flat);
+        var from = p.root.rotation;
+        WardenAudio.Play("crack", p.root.position + Vector3.up * 2f, 0.9f, 0.6f);
+        WardenFx.Dust(p.root.position, 6, 1.6f, 1.1f);
+        const float T = 0.9f;
+        var t = 0f;
+        while (t < T)
+        {
+            t += Time.deltaTime;
+            var k = Mathf.Clamp01(t / T);
+            p.root.rotation = Quaternion.AngleAxis(86f * k * k * k, axis) * from;
+            yield return null;
+        }
+        var basePos = p.root.position;
+        var along = flat;
+        for (var d = 0.8f; d < r.height; d += 1.3f)
+        {
+            var at = basePos + along * d;
+            WardenFx.Debris(at, 5, 5f, 1.4f);
+            WardenFx.Dust(at, 3, 1.4f, 1.1f);
+        }
+        var mid = basePos + along * r.height * 0.6f;
+        WardenFx.Impact(mid, 1.8f, 0.3f, 0f, 10, 1.2f, 0.8f);
+        WardenAudio.Play("boom", mid, 0.8f, 1.1f);
+        WardenAudio.Play("stone", mid, 1f, 0.55f);
+        heartbeat = Mathf.Max(heartbeat, 0.5f);
+        p.root.gameObject.SetActive(false);
+        r.motion = Gone;
     }
 
     /// <summary>The Core's heartbeat on the floor veins (P3 THUMP, finale pulse).</summary>
