@@ -8,6 +8,10 @@ using UnityEngine;
 /// leaving the floor, BOOM = the eruption). Impacts use the CC0 Kenney clips
 /// copied to Resources/Audio/Sfx (Boss*); the Core's own voice is synthesised on
 /// first use, so nothing here can be silently missing.
+/// The fight also has a bed — a low choir drone under a slow war drum — that
+/// <see cref="Duck"/> pulls out for the half-second of silence before a huge
+/// attack, so the charge hum and the armour own the moment and the impact lands
+/// into a room that just went quiet. Tells (hum, chime, thump, armour) are never ducked.
 /// </summary>
 public sealed class WardenAudio : MonoBehaviour
 {
@@ -16,6 +20,9 @@ public sealed class WardenAudio : MonoBehaviour
     private AudioSource[] pool;
     private int next;
     private readonly Dictionary<string, AudioClip> clips = new Dictionary<string, AudioClip>();
+    private readonly Dictionary<AudioSource, float> duckable = new Dictionary<AudioSource, float>();
+    private AudioSource bed;
+    private float duckGain = 1f, duckDepth = 1f, duckUntil = -1f;
 
     private static WardenAudio Inst
     {
@@ -75,8 +82,64 @@ public sealed class WardenAudio : MonoBehaviour
     public static void StopLoop(AudioSource s)
     {
         if (s == null) return;
+        if (inst != null) inst.duckable.Remove(s);
         s.Stop();
         Destroy(s.gameObject);
+    }
+
+    /// <summary>A loop that behaves like music: it ducks under <see cref="Duck"/> (the finale drone).</summary>
+    public static AudioSource MusicLoop(string id, Vector3 pos, float volume = 1f, float pitch = 1f)
+    {
+        var s = Loop(id, pos, volume, pitch);
+        if (s != null) Inst.duckable[s] = volume;
+        return s;
+    }
+
+    /// <summary>The fight's bed (2D drone + war drum) — on at engage, off at reset/defeat.</summary>
+    public static void Bed(bool on, float volume = 0.32f)
+    {
+        var a = Inst;
+        if (!on)
+        {
+            if (a.bed != null) { a.duckable.Remove(a.bed); a.bed.Stop(); Destroy(a.bed.gameObject); }
+            a.bed = null;
+            return;
+        }
+        if (a.bed != null) return;
+        var clip = a.Get("bed");
+        if (clip == null) return;
+        a.bed = a.MakeSource("bed");
+        a.bed.spatialBlend = 0f;
+        a.bed.clip = clip;
+        a.bed.loop = true;
+        a.bed.volume = volume;
+        a.bed.Play();
+        a.duckable[a.bed] = volume;
+    }
+
+    /// <summary>Silence before something huge: the bed and music loops fall to
+    /// <paramref name="depth"/> for <paramref name="seconds"/> (real time), then
+    /// come back fast — as the impact lands.</summary>
+    public static void Duck(float seconds, float depth = 0.06f)
+    {
+        var a = Inst;
+        a.duckUntil = Mathf.Max(a.duckUntil, Time.unscaledTime + Mathf.Max(0.05f, seconds));
+        a.duckDepth = Mathf.Clamp01(depth);
+    }
+
+    /// <summary>End a duck now (the impact).</summary>
+    public static void Unduck()
+    {
+        if (inst != null) inst.duckUntil = -1f;
+    }
+
+    private void Update()
+    {
+        var ducked = Time.unscaledTime < duckUntil;
+        // Out over ~0.25s (a held breath), back in a snap.
+        duckGain = Mathf.MoveTowards(duckGain, ducked ? duckDepth : 1f, Time.unscaledDeltaTime * (ducked ? 4f : 9f));
+        foreach (var kv in duckable)
+            if (kv.Key != null) kv.Key.volume = kv.Value * duckGain;
     }
 
     private AudioClip Get(string id)
@@ -101,6 +164,10 @@ public sealed class WardenAudio : MonoBehaviour
             "crack" => Synth(id, 0.3f, Crack),
             "drone" => Synth(id, 4f, Drone, loop: true),
             "scrape" => Synth(id, 1f, Scrape, loop: true),
+            "sub" => Synth(id, 0.9f, Sub),
+            "shing" => Synth(id, 0.6f, Shing),
+            "armour" => Synth(id, 0.45f, Armour),
+            "bed" => Synth(id, BedBeats * 60f / BedBpm, BedLoop, loop: true),
             _ => null,
         };
         clips[id] = c;
@@ -243,6 +310,66 @@ public sealed class WardenAudio : MonoBehaviour
         if (s.Noise() > 0.97f) s.rng = 1f;
         s.rng *= 0.995f;
         return (a - b) * (0.6f + 0.4f * Mathf.Sin(2f * Mathf.PI * 11f * t)) + (a - b) * s.rng * 1.5f;
+    }
+
+    // Sub-bass under the nastiest impacts: a 62→28 Hz drop, felt more than heard.
+    private static float Sub(float t, float dur, ref State s)
+    {
+        var f = Mathf.Lerp(62f, 28f, Mathf.Clamp01(t / 0.35f));
+        s.phase += 2f * Mathf.PI * f / Rate;
+        var env = (t < 0.008f ? t / 0.008f : 1f) * Mathf.Exp(-t / 0.3f);
+        return Mathf.Sin(s.phase) * env + Lp(ref s.lp, s.Noise(), 160f) * Mathf.Exp(-t / 0.05f) * 0.6f;
+    }
+
+    // The glint before a strike: a bright metallic ring over a short scrape.
+    private static float Shing(float t, float dur, ref State s)
+    {
+        var env = Mathf.Exp(-t / 0.18f) * (t < 0.004f ? t / 0.004f : 1f);
+        var ring = Mathf.Sin(2f * Mathf.PI * 2093f * t) + 0.6f * Mathf.Sin(2f * Mathf.PI * 3322f * t + 0.3f)
+                 + 0.35f * Mathf.Sin(2f * Mathf.PI * 5274f * t + 1.1f);
+        var x = s.Noise();
+        var hiss = (x - Lp(ref s.lp, x, 3000f)) * Mathf.Exp(-t / 0.04f);
+        return ring * env * 0.6f + hiss * 0.8f;
+    }
+
+    // Armour settling in the silence: a few short inharmonic clanks.
+    private static float Armour(float t, float dur, ref State s)
+    {
+        float Clank(float tc, float f)
+        {
+            if (tc < 0f) return 0f;
+            var e = Mathf.Exp(-tc / 0.035f);
+            return (Mathf.Sin(2f * Mathf.PI * f * tc) + 0.7f * Mathf.Sin(2f * Mathf.PI * f * 2.76f * tc)) * e;
+        }
+        var x = s.Noise();
+        var grit = (x - Lp(ref s.lp, x, 1200f)) * (Mathf.Exp(-t / 0.02f) + Mathf.Exp(-Mathf.Max(0f, t - 0.11f) / 0.02f) * (t > 0.11f ? 1f : 0f));
+        return Clank(t, 610f) + Clank(t - 0.11f, 520f) * 0.8f + Clank(t - 0.19f, 700f) * 0.5f + grit * 0.4f;
+    }
+
+    private const float BedBpm = 72f;
+    private const int BedBeats = 8;
+
+    // The bed: a dark choir drone and a slow war drum (beats 1, 2.5, 3, 4 of each bar).
+    private static float BedLoop(float t, float dur, ref State s)
+    {
+        float[] f = { 41.2f, 61.7f, 82.4f, 123.5f };
+        float[] a = { 0.32f, 0.16f, 0.18f, 0.06f };
+        var v = 0f;
+        for (var i = 0; i < f.Length; i++)
+            v += a[i] * (Mathf.Sin(2f * Mathf.PI * (f[i] - 0.15f) * t) + Mathf.Sin(2f * Mathf.PI * (f[i] + 0.15f) * t + i));
+        v *= 0.8f + 0.2f * Mathf.Sin(2f * Mathf.PI * t / dur);
+        var beat = 60f / BedBpm;
+        float[] hits = { 0f, 1.5f, 2f, 3f, 4f, 5.5f, 6f, 7f };
+        float[] amp = { 1f, 0.55f, 0.8f, 0.6f, 1f, 0.55f, 0.8f, 0.9f };
+        var drum = 0f;
+        for (var i = 0; i < hits.Length; i++)
+        {
+            var tb = t - hits[i] * beat;
+            if (tb < 0f || tb > 0.6f) continue;
+            var fd = Mathf.Lerp(78f, 46f, Mathf.Clamp01(tb / 0.18f));
+            drum += amp[i] * Mathf.Sin(2f * Mathf.PI * fd * tb) * Mathf.Exp(-tb / 0.22f);
+        }
+        return v * 0.55f + drum * 0.9f;
     }
 
     private void OnDestroy()

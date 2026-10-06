@@ -140,6 +140,37 @@ public sealed class PlayerCameraController : MonoBehaviour
 
     public void ClearBossFocus() => bossFocus = null;
 
+    // Giant-attack framing: a slow, small widen + pull-back + lift that eases in,
+    // holds, eases out. Player orbit/pitch stay theirs — the frame breathes, it never swings.
+    private float frameFov, framePull, frameLift, frameStart = -99f, frameIn = 0.35f, frameHold, frameOut = 0.6f;
+
+    /// <summary>Widen the frame for a huge attack: +<paramref name="fovAdd"/>° FOV, orbit ×(1 +
+    /// <paramref name="pullBack"/>), camera +<paramref name="lift"/> m, for <paramref name="seconds"/>
+    /// (real time, including the ease in/out). A stronger call overrides a weaker running one.</summary>
+    public void Frame(float fovAdd, float pullBack, float lift, float seconds, float easeIn = 0.35f, float easeOut = 0.6f)
+    {
+        var running = FrameWeight() > 0.05f;
+        if (running && fovAdd < frameFov && pullBack < framePull) return;
+        frameFov = Mathf.Clamp(fovAdd, 0f, 14f);
+        framePull = Mathf.Clamp(pullBack, 0f, 0.6f);
+        frameLift = Mathf.Clamp(lift, 0f, 2f);
+        frameIn = Mathf.Max(0.05f, easeIn);
+        frameOut = Mathf.Max(0.05f, easeOut);
+        frameHold = Mathf.Max(0f, seconds - frameIn - frameOut);
+        frameStart = Time.unscaledTime - (running ? frameIn : 0f);
+    }
+
+    private float FrameWeight()
+    {
+        var t = Time.unscaledTime - frameStart;
+        if (t < 0f) return 0f;
+        if (t < frameIn) return Mathf.SmoothStep(0f, 1f, t / frameIn);
+        t -= frameIn;
+        if (t < frameHold) return 1f;
+        t -= frameHold;
+        return t < frameOut ? Mathf.SmoothStep(1f, 0f, t / frameOut) : 0f;
+    }
+
     private void TickBossFocus()
     {
         var want = bossFocus != null && bossFocus.gameObject.activeInHierarchy ? 1f : 0f;
@@ -425,6 +456,8 @@ public sealed class PlayerCameraController : MonoBehaviour
                         Mathf.Clamp01(planar.magnitude / lockOnScaleDistance));
             }
             d *= Mathf.Lerp(1f, bossFocusDistance, bossFocusBlend);
+            var framing = FrameWeight();
+            d *= 1f + framePull * framing;
             smoothedDistance = Mathf.SmoothDamp(smoothedDistance, d, ref distanceVel, lockOnDistanceSmooth);
             d = smoothedDistance;
 
@@ -456,7 +489,7 @@ public sealed class PlayerCameraController : MonoBehaviour
             }
             airFocusRise = Mathf.MoveTowards(airFocusRise, focusTarget,
                 Time.unscaledDeltaTime * (focusTarget > airFocusRise ? 1.5f / 0.15f : 1.5f / 0.25f));
-            offset.y += airFocusRise;
+            offset.y += airFocusRise + frameLift * framing;
 
             // Souls shoulder framing: shift the camera right while locked so
             // the player sits slightly left-of-centre with the target clear.
@@ -486,7 +519,7 @@ public sealed class PlayerCameraController : MonoBehaviour
         if (cinemachineCamera != null)
         {
             var lens = cinemachineCamera.Lens;
-            lens.FieldOfView = targetFOV;
+            lens.FieldOfView = targetFOV + frameFov * FrameWeight();
             cinemachineCamera.Lens = lens;
         }
     }

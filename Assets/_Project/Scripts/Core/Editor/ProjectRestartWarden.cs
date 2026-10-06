@@ -18,8 +18,17 @@ using UnityEngine;
 /// All geometry is generated (faceted, unwelded, Mechanical Environment crease
 /// channels) into project-owned mesh assets (MeshAssetWriter keeps GUIDs on
 /// rebuild); the throne is a vendor prefab instance with its colliders off.
+/// RELOCATION: the Warden no longer fights on the bare test floor. When the old
+/// boss floor (BossArenaFloor2) exists it becomes a dressed stone FORECOURT (same
+/// footprint, so every route that reached it still does) with a Checkpoint
+/// ("Sanctum Approach") — and the sanctum itself is built 50 m further along the
+/// approach, reached over an 18 m CAUSEWAY across the void (crimson-veined, broken
+/// balustrade, floating stones, its own fall net back to the forecourt). The boss
+/// moves to the sanctum centre; the fog gate moves to its doorway. A re-run keeps
+/// the relocated site (marker child), so it never walks further away.
 /// Re-runnable: the old sanctum is replaced, the scene is backed up first.
-/// Also rebuilds BossLordBase.controller (Warden P2/P3 states).
+/// Also rebuilds BossLordBase.controller (Warden states) and bakes the spectral
+/// arsenal (Synty weapons → Resources/WardenArsenal ghosts).
 /// Manual, outside Play Mode.
 /// </summary>
 public static class ProjectRestartWarden
@@ -31,6 +40,31 @@ public static class ProjectRestartWarden
 
     private const float PlatformR = 10f, OuterR = 15.5f, WallR = 16f, WallT = 1.2f, WallH = 7.5f;
     private const float FloorThick = 1.2f, PillarR = 14.2f, SlabRunR = 11.9f, SlabLen = 12.1f, DoorW = 6.8f;
+    private const float EntranceLen = 4.6f, CausewayLen = 18f, CausewayW = 6.4f;
+    private const string RelocatedMarker = "Relocated site (v2)";
+    /// <summary>Forecourt centre → sanctum centre along the approach, for a forecourt
+    /// reaching <paramref name="half"/> metres toward the sanctum.</summary>
+    private static float ForecourtToCentre(float half) => OuterR + EntranceLen - 0.15f + CausewayLen + half - 0.5f;
+
+    /// <summary>The old boss floor's top-face corners (world, clockwise from above).</summary>
+    private static Vector3[] FloorCorners(GameObject floor, float top)
+    {
+        var t = floor.transform;
+        var c = new[]
+        {
+            t.TransformPoint(new Vector3(-0.5f, 0.5f, -0.5f)), t.TransformPoint(new Vector3(-0.5f, 0.5f, 0.5f)),
+            t.TransformPoint(new Vector3(0.5f, 0.5f, 0.5f)), t.TransformPoint(new Vector3(0.5f, 0.5f, -0.5f)),
+        };
+        for (var i = 0; i < c.Length; i++) c[i].y = top;
+        return c;
+    }
+
+    private static float HalfAlong(Vector3[] corners, Vector3 centre, Vector3 dir)
+    {
+        var best = 0f;
+        foreach (var c in corners) best = Mathf.Max(best, Vector3.Dot(c - centre, dir));
+        return best;
+    }
 
     private static Material stone, stoneDark, stoneLight, corestone, runMark, crystal;
     private static readonly List<string> report = new List<string>();
@@ -63,7 +97,8 @@ public static class ProjectRestartWarden
 
         ProjectRestartUrpFix.FixAll();
         ProjectRestartBossLord.BuildController();
-        report.Add("BossLordBase.controller: Warden Phase 2/3 states ensured.");
+        report.Add("BossLordBase.controller: greatsword strings + Warden Phase 2/3 states ensured.");
+        report.Add(ProjectRestartWardenArsenal.Bake());
 
         var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         var boss = Object.FindFirstObjectByType<BossLord>();
@@ -91,19 +126,56 @@ public static class ProjectRestartWarden
         EnsureFolder(MatDir);
         Materials();
 
-        // Arena frame: centre = the boss's spot on the old arena floor; forward
-        // (+Z) points away from the fog gate, toward the throne.
+        // Arena frame: forward (+Z) points away from the fog gate, toward the throne.
+        // The old boss floor becomes the forecourt; the sanctum sits 50 m on.
         var oldFloor = GameObject.Find("BossArenaFloor2");
-        var floorTop = boss.transform.position.y;
-        if (oldFloor != null && oldFloor.TryGetComponent<Collider>(out var ofc)) floorTop = ofc.bounds.max.y;
-        var centre = new Vector3(boss.transform.position.x, floorTop, boss.transform.position.z);
         var gate = Object.FindObjectsByType<FogGate>(FindObjectsInactive.Include, FindObjectsSortMode.None)
             .FirstOrDefault(g => new SerializedObject(g).FindProperty("boss").objectReferenceValue == boss);
-        var toGate = gate != null ? Vector3.ProjectOnPlane(gate.transform.position - centre, Vector3.up) : -boss.transform.forward;
-        if (toGate.sqrMagnitude < 0.01f) toGate = -boss.transform.forward;
-        var frame = Quaternion.LookRotation(-toGate.normalized, Vector3.up);
-
         var old = GameObject.Find("CoreSanctum");
+        var floorTop = boss.transform.position.y;
+        if (oldFloor != null) floorTop = oldFloor.transform.position.y + oldFloor.transform.lossyScale.y * 0.5f;
+        Vector3 centre;
+        Quaternion frame;
+        Vector3? forecourt = null;
+        var corners = oldFloor != null ? FloorCorners(oldFloor, floorTop) : null;
+        if (old != null && old.transform.Find(RelocatedMarker) != null)
+        {
+            // Already relocated: rebuild on the same site.
+            centre = old.transform.position;
+            frame = old.transform.rotation;
+            if (oldFloor != null) forecourt = new Vector3(oldFloor.transform.position.x, floorTop, oldFloor.transform.position.z);
+            report.Add("Relocated site kept: " + centre);
+        }
+        else
+        {
+            Vector3 fwd;
+            var floorCentre = oldFloor != null ? new Vector3(oldFloor.transform.position.x, floorTop, oldFloor.transform.position.z)
+                                               : new Vector3(boss.transform.position.x, floorTop, boss.transform.position.z);
+            if (old != null) fwd = Vector3.ProjectOnPlane(old.transform.forward, Vector3.up);   // the old in-place sanctum's axis
+            else
+            {
+                var toGate = gate != null ? Vector3.ProjectOnPlane(gate.transform.position - floorCentre, Vector3.up) : -boss.transform.forward;
+                if (toGate.sqrMagnitude < 0.01f) toGate = -boss.transform.forward;
+                fwd = -toGate;
+            }
+            if (fwd.sqrMagnitude < 0.01f) fwd = Vector3.forward;
+            fwd.Normalize();
+            frame = Quaternion.LookRotation(fwd, Vector3.up);
+            if (oldFloor != null)
+            {
+                forecourt = floorCentre;
+                var along = ForecourtToCentre(HalfAlong(corners, floorCentre, fwd));
+                centre = floorCentre + fwd * along;
+                report.Add($"Relocated: the old boss floor at {floorCentre} is the forecourt; the sanctum is {along:F1} m on at {centre}.");
+            }
+            else
+            {
+                centre = floorCentre;
+                report.Add("No BossArenaFloor2 — sanctum built in place around the boss (no causeway).");
+            }
+        }
+        var toGateFinal = -(frame * Vector3.forward);
+
         if (old != null) Object.DestroyImmediate(old);
         var root = new GameObject("CoreSanctum").transform;
         root.SetPositionAndRotation(centre, frame);
@@ -115,7 +187,11 @@ public static class ProjectRestartWarden
         BuildDebris(root);
         BuildLights(root);
         BuildEntrance(root);
-        var fallNet = BuildFallNet(root);
+        BuildSconces(root);
+        var fallNet = BuildFallNet(root, forecourt.HasValue ? 48f : 70f);
+        if (forecourt.HasValue && corners != null)
+            BuildApproach(root, root.InverseTransformPoint(forecourt.Value), corners.Select(c => root.InverseTransformPoint(c)).ToArray());
+        new GameObject(RelocatedMarker).transform.SetParent(root, false);
 
         var sanctum = root.gameObject.AddComponent<CoreSanctum>();
         WireSanctum(sanctum, central);
@@ -130,7 +206,7 @@ public static class ProjectRestartWarden
         }
         if (gate != null) PlaceGate(gate, root, doorLocal);
 
-        boss.transform.SetPositionAndRotation(centre, Quaternion.LookRotation(toGate.normalized, Vector3.up));
+        boss.transform.SetPositionAndRotation(centre, Quaternion.LookRotation(toGateFinal, Vector3.up));
         var bso = new SerializedObject(boss);
         var sp = bso.FindProperty("sanctum");
         if (sp != null) sp.objectReferenceValue = sanctum;
@@ -488,14 +564,192 @@ public static class ProjectRestartWarden
         Box(go, new Vector3(7.6f, FloorThick, len));
     }
 
-    private static FallReturn BuildFallNet(Transform root)
+    /// <summary>Corestone sconces on the standing walls and either side of the doorway:
+    /// crimson crystal clusters with a low light — they pulse with the floor veins.</summary>
+    private static void BuildSconces(Transform root)
+    {
+        var rng = new System.Random(91);
+        var spots = new List<(float az, float tangent)> { (90f, 0f), (270f, 0f), (180f, -(DoorW * 0.5f + 1.4f)), (180f, DoorW * 0.5f + 1.4f) };
+        var i = 0;
+        foreach (var (az, tangent) in spots)
+        {
+            var d = Az(az);
+            var inward = -new Vector3(d.x, 0f, d.y);
+            var side = Vector3.Cross(Vector3.up, inward);
+            var at = -inward * (WallR - WallT * 0.5f - 0.12f) + side * tangent + Vector3.up * 3.1f;
+            var m = new Crease();
+            for (var k = 0; k < 4; k++)
+            {
+                var o = side * ((float)rng.NextDouble() - 0.5f) * 0.6f + Vector3.up * ((float)rng.NextDouble() - 0.5f) * 0.3f;
+                var lean = inward * (0.25f + (float)rng.NextDouble() * 0.3f) + side * ((float)rng.NextDouble() - 0.5f) * 0.3f;
+                m.Spike(at + o, 0.1f + (float)rng.NextDouble() * 0.1f, 0.45f + (float)rng.NextDouble() * 0.5f, lean, 5);
+            }
+            floorVeins.Add(Strip(root, "Sconce_" + i, Save(m.Build("Sanctum sconce " + i), "Sconce_" + i), crystal, Vector3.zero));
+            var lgo = new GameObject("Sconce light " + i);
+            lgo.transform.SetParent(root, false);
+            lgo.transform.localPosition = at + inward * 0.8f + Vector3.up * 0.3f;
+            var l = lgo.AddComponent<Light>();
+            l.type = LightType.Point;
+            l.color = new Color(1f, 0.16f, 0.12f);
+            l.intensity = 1.6f;
+            l.range = 8f;
+            l.shadows = LightShadows.None;
+            i++;
+        }
+    }
+
+    /// <summary>The relocated approach: the old boss floor dressed as a stone forecourt
+    /// (its exact footprint, corners chamfered — every route that reached it still
+    /// does — with the "Sanctum Approach" checkpoint), then a crimson-veined causeway
+    /// across the void to the sanctum's entrance landing. Side guards are invisible
+    /// boxes; the broken balustrade is visual only. A fall from the causeway returns
+    /// to the forecourt.</summary>
+    private static void BuildApproach(Transform root, Vector3 fl, Vector3[] cornersLocal)
+    {
+        var rng = new System.Random(131);
+        fl.y = 0f;
+        var apothem = 0f;
+        foreach (var c in cornersLocal) apothem = Mathf.Max(apothem, c.z - fl.z);
+        var minHalf = float.MaxValue;
+        foreach (var c in cornersLocal) minHalf = Mathf.Min(minHalf, Mathf.Min(Mathf.Abs(c.x - fl.x), Mathf.Abs(c.z - fl.z)));
+
+        // Forecourt slab over the old floor (same footprint, chamfered, faceted stone, a vein ring).
+        var fm = new Crease();
+        var foot = new List<Vector2>();
+        const float chamfer = 1.2f;
+        for (var k = 0; k < cornersLocal.Length; k++)
+        {
+            var cur = new Vector2(cornersLocal[k].x, cornersLocal[k].z);
+            var prev = new Vector2(cornersLocal[(k + cornersLocal.Length - 1) % cornersLocal.Length].x, cornersLocal[(k + cornersLocal.Length - 1) % cornersLocal.Length].z);
+            var next = new Vector2(cornersLocal[(k + 1) % cornersLocal.Length].x, cornersLocal[(k + 1) % cornersLocal.Length].z);
+            foot.Add(cur + (prev - cur).normalized * chamfer);
+            foot.Add(cur + (next - cur).normalized * chamfer);
+        }
+        fm.Prism(foot, -FloorThick, 0f);
+        var court = Solid(root, "Forecourt", Save(fm.Build("Sanctum forecourt"), "Forecourt"), stoneDark, Vector3.zero, Quaternion.identity, true);
+        var fv = new Ribbons();
+        var ring = new List<Vector3>();
+        var ringR = Mathf.Max(3f, minHalf * 0.55f);
+        for (var k = 0; k <= 16; k++) { var d = Az(k * 22.5f) * ringR; ring.Add(new Vector3(fl.x + d.x, 0.012f, fl.z + d.y)); }
+        fv.Strip(ring, Vector3.up, 0.1f);
+        fv.Strip(Jagged(rng, Az(0f), ringR, apothem - 0.2f, 0.012f).Select(p => p + new Vector3(fl.x, 0f, fl.z)).ToList(), Vector3.up, 0.09f);
+        floorVeins.Add(Strip(court.Find("Visual"), "Corestone veins", Save(fv.Build("Sanctum forecourt veins"), "ForecourtVeins"), corestone, Vector3.zero));
+        var rocks = new Crease();
+        foreach (var c in cornersLocal)
+        {
+            var inward = (new Vector3(fl.x, 0f, fl.z) - new Vector3(c.x, 0f, c.z)).normalized;
+            for (var k = 0; k < 2; k++)
+            {
+                var at = new Vector3(c.x, 0.2f, c.z) + inward * (2.6f + (float)rng.NextDouble() * 2f)
+                         + Vector3.Cross(Vector3.up, inward) * ((float)rng.NextDouble() - 0.5f) * 2f;
+                rocks.Rock(rng, 0.6f + (float)rng.NextDouble() * 0.9f, at);
+            }
+        }
+        Solid(court.Find("Visual"), "Rubble", Save(rocks.Build("Sanctum forecourt rubble"), "ForecourtRubble"), stone, Vector3.zero, Quaternion.identity, false);
+
+        // The causeway: entrance landing → forecourt edge.
+        var zNear = -(OuterR + EntranceLen - 0.15f) + 0.2f;
+        var zFar = fl.z + apothem - 0.4f;
+        var length = zNear - zFar;
+        if (length < 1f) { report.Add("Approach skipped: forecourt overlaps the sanctum."); return; }
+        var midZ = (zNear + zFar) * 0.5f;
+        var deck = Solid(root, "Causeway", Save(BoxMesh(new Vector3(CausewayW, FloorThick, length)).Build("Sanctum causeway"), "Causeway"), stoneDark,
+                         new Vector3(0f, -FloorThick * 0.5f, midZ), Quaternion.identity, false);
+        Box(deck, new Vector3(CausewayW, FloorThick, length));
+        foreach (var sgn in new[] { -1f, 1f })
+        {
+            var guard = new GameObject("Causeway guard " + (sgn < 0f ? "L" : "R"));
+            guard.transform.SetParent(deck, false);
+            guard.transform.localPosition = new Vector3(sgn * (CausewayW * 0.5f + 0.15f), FloorThick * 0.5f + 0.6f, 0f);
+            guard.AddComponent<BoxCollider>().size = new Vector3(0.3f, 1.2f, length);
+        }
+        var cv = new Ribbons();
+        cv.Strip(Jagged(rng, Az(180f), -zNear + 0.3f, -zFar - 0.3f, 0.012f + FloorThick * 0.5f).Select(p => p - new Vector3(0f, 0f, midZ)).ToList(), Vector3.up, 0.11f);
+        floorVeins.Add(Strip(deck.Find("Visual"), "Corestone vein", Save(cv.Build("Sanctum causeway vein"), "CausewayVein"), corestone, Vector3.zero));
+
+        // Broken balustrade (visual only): posts every ~3 m, some snapped, a few rail spans.
+        var posts = new Crease();
+        var sq = new List<Vector2> { new Vector2(-0.2f, -0.2f), new Vector2(-0.2f, 0.2f), new Vector2(0.2f, 0.2f), new Vector2(0.2f, -0.2f) };
+        for (var z = zFar + 1.2f; z < zNear - 0.8f; z += 3f)
+            foreach (var sgn in new[] { -1f, 1f })
+            {
+                var broken = rng.NextDouble() < 0.35;
+                var h = broken ? 0.35f + (float)rng.NextDouble() * 0.4f : 1.15f;
+                var at = new Vector3(sgn * (CausewayW * 0.5f - 0.3f), 0f, z);
+                posts.Prism(sq.Select(q => new Vector2(q.x + at.x, q.y + at.z)).ToList(), 0f, h);
+                if (!broken && rng.NextDouble() < 0.55 && z + 3f < zNear - 0.8f)
+                {
+                    var rail = new List<Vector2> { new Vector2(at.x - 0.12f, at.z), new Vector2(at.x - 0.12f, at.z + 3f), new Vector2(at.x + 0.12f, at.z + 3f), new Vector2(at.x + 0.12f, at.z) };
+                    posts.Prism(rail, 0.8f, 1.0f);
+                }
+                if (broken) posts.Rock(rng, 0.35f, at + new Vector3(sgn * 0.5f, 0.1f, 0.6f));
+            }
+        Solid(root, "Causeway balustrade", Save(posts.Build("Sanctum causeway balustrade"), "CausewayBalustrade"), stoneLight, Vector3.zero, Quaternion.identity, false);
+
+        // Stones hanging in the void beside it — the first sign that gravity is failing.
+        var floaters = new Crease();
+        for (var k = 0; k < 10; k++)
+        {
+            var sgn = k % 2 == 0 ? -1f : 1f;
+            var at = new Vector3(sgn * (CausewayW * 0.5f + 2f + (float)rng.NextDouble() * 5f), -2.5f + (float)rng.NextDouble() * 6f,
+                                 Mathf.Lerp(zFar, zNear, (float)rng.NextDouble()));
+            floaters.Rock(rng, 0.7f + (float)rng.NextDouble() * 1.6f, at);
+        }
+        for (var k = 0; k < 3; k++)
+            floaters.Rock(rng, 1.4f, new Vector3(((float)rng.NextDouble() - 0.5f) * 3f, -FloorThick - 0.8f - (float)rng.NextDouble(), Mathf.Lerp(zFar, zNear, k / 2f)));
+        Solid(root, "Floating stones", Save(floaters.Build("Sanctum causeway floaters"), "CausewayFloaters"), stone, Vector3.zero, Quaternion.identity, false);
+
+        for (var k = 0; k < 4; k++)
+        {
+            var lgo = new GameObject("Causeway light " + k);
+            lgo.transform.SetParent(root, false);
+            lgo.transform.localPosition = new Vector3((k % 2 == 0 ? -1f : 1f) * (CausewayW * 0.5f - 0.3f), 1.6f, Mathf.Lerp(zFar + 2f, zNear - 2f, k / 3f));
+            var l = lgo.AddComponent<Light>();
+            l.type = LightType.Point;
+            l.color = new Color(1f, 0.18f, 0.14f);
+            l.intensity = 1.3f;
+            l.range = 7f;
+            l.shadows = LightShadows.None;
+        }
+
+        // A fall from the causeway goes back to the forecourt, never past the fog gate.
+        var net = new GameObject("Causeway fall net");
+        net.transform.SetParent(root, false);
+        net.transform.localPosition = new Vector3(0f, -10f, midZ);
+        var nb = net.AddComponent<BoxCollider>();
+        nb.isTrigger = true;
+        nb.size = new Vector3(26f, 6f, length + 6f);
+        var fr = net.AddComponent<FallReturn>();
+        var back = new GameObject("Causeway return point").transform;
+        back.SetParent(root, false);
+        back.localPosition = fl + new Vector3(0f, 0.3f, apothem - 3f);
+        back.localRotation = Quaternion.identity;
+        var so = new SerializedObject(fr);
+        var rp = so.FindProperty("returnPoint");
+        if (rp != null) rp.objectReferenceValue = back;
+        so.ApplyModifiedPropertiesWithoutUndo();
+
+        // The rest before the fight: scene-root object so a sanctum rebuild keeps its lit state.
+        var cpPos = root.TransformPoint(fl + new Vector3(3.4f, 0f, apothem - 4f));
+        var cp = Object.FindObjectsByType<Checkpoint>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            .FirstOrDefault(c => c.name == "Checkpoint Sanctum");
+        if (cp == null) cp = new GameObject("Checkpoint Sanctum").AddComponent<Checkpoint>();
+        cp.transform.SetPositionAndRotation(cpPos, root.rotation);
+        var cso = new SerializedObject(cp);
+        cso.FindProperty("displayName").stringValue = "Sanctum Approach";
+        cso.ApplyModifiedPropertiesWithoutUndo();
+        EditorUtility.SetDirty(cp.gameObject);
+        report.Add($"Approach: forecourt (old floor footprint) + {length:F1} m causeway + Checkpoint 'Sanctum Approach' at {cpPos}.");
+    }
+
+    private static FallReturn BuildFallNet(Transform root, float size)
     {
         var go = new GameObject("Sanctum fall net");
         go.transform.SetParent(root, false);
         go.transform.localPosition = Vector3.down * 14f;
         var box = go.AddComponent<BoxCollider>();
         box.isTrigger = true;
-        box.size = new Vector3(70f, 6f, 70f);
+        box.size = new Vector3(size, 6f, size);
         var fr = go.AddComponent<FallReturn>();
         var point = new GameObject("Fall return point").transform;
         point.SetParent(root, false);

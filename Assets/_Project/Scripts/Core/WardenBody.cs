@@ -9,8 +9,11 @@ using UnityEngine;
 ///   • body / blade emission swells (Executioner's Delay, Worldsplitter);
 ///   • the five-segment countdown up the greatsword (handle → guard → lower →
 ///     middle → tip — when the tip lights, he swings);
-///   • the swords: the Phase 2 blade that breaks, the Phase 3 greatsword (a
-///     scaled copy of the hand blade), and its risen / planted / floating copies.
+///   • the swords: his own blade (the BossSword) that breaks at the transition,
+///     the Phase 3 greatsword — the SAME weapon reforged by the Core: grown ×1.55,
+///     blackened, crimson-veined, loose fragments tethered to it (the procedural
+///     Corestone slab is only the fallback when no BossSword is rigged) — and its
+///     risen / planted / floating copies. Sword emission belongs to WardenBlade.
 /// Colour stays on-language: crimson = danger, pale only at peaks.
 /// </summary>
 public sealed class WardenBody : MonoBehaviour
@@ -38,6 +41,8 @@ public sealed class WardenBody : MonoBehaviour
     private readonly List<Renderer> bodyEmit = new List<Renderer>();
     private readonly List<float> bodyBase = new List<float>();
     private Transform swordP2, greatsword;
+    private LineRenderer coreLine;
+    private const float GreatScale = 1.55f;
     private Transform floatCopy, plantedCopy, risingCopy;
     private Transform floatAnchor;
     private readonly List<Transform> orbit = new List<Transform>();
@@ -52,6 +57,10 @@ public sealed class WardenBody : MonoBehaviour
     public Vector3 CorePosition => core != null ? core.position : transform.position + Vector3.up * 1.6f;
     public Vector3 ChestPosition => chest != null ? chest.position : transform.position + Vector3.up * 1.4f;
     public bool HasGreatsword => greatsword != null;
+    /// <summary>The weapon currently in his right hand (null = empty-handed).</summary>
+    public Transform HandSword => greatsword != null && greatsword.gameObject.activeSelf ? greatsword
+                                : swordP2 != null && swordP2.gameObject.activeSelf ? swordP2 : null;
+    public Transform BaseSword => swordP2;
 
     public void Init(Animator animator)
     {
@@ -72,6 +81,8 @@ public sealed class WardenBody : MonoBehaviour
             foreach (var r in anim.GetComponentsInChildren<Renderer>(true))
             {
                 if (r is ParticleSystemRenderer || r is TrailRenderer || r is LineRenderer) continue;
+                // The swords' glow is WardenBlade's (windup heat, glint, swing flash).
+                if ((swordP2 != null && r.transform.IsChildOf(swordP2)) || (greatsword != null && r.transform.IsChildOf(greatsword))) continue;
                 var m = r.sharedMaterial;
                 if (m == null || !m.HasProperty(EmissionId)) continue;
                 bodyEmit.Add(r);
@@ -115,6 +126,7 @@ public sealed class WardenBody : MonoBehaviour
     /// blade's grip frame (+Y = tip, pivot = grip), drawn in the boss's own wire style.</summary>
     private Transform BuildGreatsword(Transform hand, Transform reference)
     {
+        if (reference != null && reference.GetComponent<MeshFilter>() != null) return BuildReforged(hand, reference);
         var go = new GameObject("BossGreatsword");
         var t = go.transform;
         t.SetParent(hand, false);
@@ -164,6 +176,78 @@ public sealed class WardenBody : MonoBehaviour
         go.SetActive(false);
         return t;
     }
+
+    /// <summary>His own sword, reforged by the Core: a copy of the BossSword on the same
+    /// grip, ×<see cref="GreatScale"/>, blackened with its emission mask burning crimson,
+    /// a hot vein down the blade and broken chunks held to the edges by red tethers.</summary>
+    private Transform BuildReforged(Transform hand, Transform reference)
+    {
+        var go = new GameObject("BossGreatsword");
+        var t = go.transform;
+        t.SetParent(hand, false);
+        t.localPosition = reference.localPosition;
+        t.localRotation = reference.localRotation;
+        t.localScale = reference.localScale * GreatScale;
+        var src = reference.GetComponent<MeshFilter>().sharedMesh;
+        go.AddComponent<MeshFilter>().sharedMesh = src;
+        var mr = go.AddComponent<MeshRenderer>();
+        var srcMat = reference.TryGetComponent<Renderer>(out var rr) ? rr.sharedMaterial : null;
+        Material mat;
+        if (srcMat != null)
+        {
+            mat = new Material(srcMat) { name = "Warden reforged greatsword (runtime)" };
+            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", new Color(0.3f, 0.26f, 0.29f));
+            if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", new Color(1f, 0.02f, 0.04f));
+            if (mat.HasProperty("_EmissionStrength")) mat.SetFloat("_EmissionStrength", Mathf.Max(1.6f, mat.GetFloat("_EmissionStrength") * 2f));
+            if (mat.HasProperty("_WireTint")) mat.SetColor("_WireTint", new Color(0.02f, 0.01f, 0.02f));
+        }
+        else mat = SlabMaterial(null);
+        mr.sharedMaterial = mat;
+
+        var b = src.bounds;
+        var tipY = Mathf.Abs(b.max.y) >= Mathf.Abs(b.min.y) ? b.max.y : b.min.y;
+        var half = b.extents.x;
+        var lgo = new GameObject("Core vein");
+        lgo.transform.SetParent(t, false);
+        coreLine = lgo.AddComponent<LineRenderer>();
+        coreLine.sharedMaterial = WardenFx.GlowMaterial;
+        coreLine.useWorldSpace = true;
+        coreLine.positionCount = 2;
+        coreLine.numCapVertices = 0;
+        coreLine.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        veinA = Vector3.up * tipY * 0.12f;
+        veinB = Vector3.up * tipY * 0.94f;
+
+        float[] ys = { 0.3f, 0.45f, 0.6f, 0.74f, 0.86f };
+        for (var i = 0; i < ys.Length; i++)
+        {
+            var side = i % 2 == 0 ? 1f : -1f;
+            var home = new Vector3(side * (half + 0.08f + 0.03f * i), ys[i] * tipY, (i % 3 - 1) * 0.04f);
+            var shard = new GameObject("Fragment");
+            shard.transform.SetParent(t, false);
+            shard.transform.localPosition = home;
+            shard.transform.localRotation = Quaternion.Euler(i * 37f, i * 71f, i * 23f);
+            shard.transform.localScale = Vector3.one * (0.5f + 0.1f * (i % 3));
+            shard.AddComponent<MeshFilter>().sharedMesh = FragmentMesh;
+            shard.AddComponent<MeshRenderer>().sharedMaterial = mat;
+            shards.Add(shard.transform);
+            shardHome.Add(home);
+            var lr = new GameObject("Tether").AddComponent<LineRenderer>();
+            lr.transform.SetParent(t, false);
+            lr.sharedMaterial = WardenFx.GlowMaterial;
+            lr.useWorldSpace = true;
+            lr.positionCount = 2;
+            lr.numCapVertices = 0;
+            lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            tethers.Add(lr);
+        }
+        edgeHalf = half;
+        go.SetActive(false);
+        return t;
+    }
+
+    private Vector3 veinA, veinB;
+    private float edgeHalf = 0.3f * SlabScale;
 
     private static Material SlabMaterial(Transform reference)
     {
@@ -364,6 +448,19 @@ public sealed class WardenBody : MonoBehaviour
     {
         if (greatsword == null || !greatsword.gameObject.activeInHierarchy) return;
         var hum = 1.1f + charge * 1.4f + beat * 1.2f + 0.25f * Mathf.Sin(Time.time * 7f);
+        if (coreLine != null)
+        {
+            var va = greatsword.TransformPoint(veinA);
+            var vb = greatsword.TransformPoint(veinB);
+            coreLine.SetPosition(0, va);
+            coreLine.SetPosition(1, vb);
+            var vw = (0.016f + 0.01f * charge + 0.012f * beat) * Vector3.Distance(va, vb);
+            coreLine.startWidth = vw;
+            coreLine.endWidth = vw * 0.35f;
+            var vc = Color.Lerp(WardenFx.Crimson, WardenFx.PaleRed, 0.12f * hum - 0.1f);
+            vc.a = 0.85f;
+            coreLine.startColor = coreLine.endColor = vc;
+        }
         if (seams != null)
         {
             mpb.Clear();
@@ -376,7 +473,7 @@ public sealed class WardenBody : MonoBehaviour
             var drift = new Vector3(Mathf.Sin(Time.time * 1.7f + i) * 0.03f, Mathf.Sin(Time.time * 1.3f + i * 2f) * 0.04f, 0f);
             shards[i].localPosition = home + drift;
             shards[i].localRotation *= Quaternion.Euler(0f, 40f * Time.deltaTime, 25f * Time.deltaTime);
-            var edgeX = home.x > 0f ? 0.3f * SlabScale : -0.3f * SlabScale;
+            var edgeX = home.x > 0f ? edgeHalf : -edgeHalf;
             var a = greatsword.TransformPoint(new Vector3(edgeX, home.y, 0f));
             var b2 = shards[i].position;
             var lr = tethers[i];

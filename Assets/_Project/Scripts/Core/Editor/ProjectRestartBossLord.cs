@@ -5,11 +5,11 @@ using UnityEngine;
 
 /// <summary>
 /// Tools > Project Restart > Setup Dark Lord Boss.
-/// Builds Assets/_Project/Animations/BossLordBase.controller �X a Locomotion
-/// blend (katana Idle��Walk by Speed) plus every named state BossLord.CrossFades
-/// to: samurai strikes (katana root clips), ninja teleport/dodge/kunai/jabs
-/// (NinjaAnimset inplace �X own avatar), magic casts (MagicalKnight �X own
-/// avatar), plus Roar/Stagger/Die/Revive. Then dresses arena 2 deeper along
+/// Builds Assets/_Project/Animations/BossLordBase.controller — a Locomotion
+/// blend (Big Sword Idle→Walk by Speed) plus every named state BossLord.CrossFades
+/// to: greatsword strings and skills (Big Sword attack-root takes), ninja
+/// teleport/dodge (NinjaAnimset inplace — own avatar), MagicalKnight crown/cast
+/// poses (own avatar), plus Roar/Stagger/Die and the Warden P2/P3 states. Then dresses arena 2 deeper along
 /// the ruin corridor: unpacked DarkLord visual (mask+cape attachments,
 /// ornate blade socketed to Hand_R, 1.15x), Health+Targetable+CharacterController
 /// +BossLord, RootMotionRelay+FootGrounding on the ANIMATOR object, FogGate2.
@@ -29,18 +29,9 @@ public static class ProjectRestartBossLord
         "Assets/ThirdParty/Synty/PolygonDungeon/Prefabs/Weapons/SM_Wep_Ornate_Sword_01.prefab";
     private const string FxDir = "Assets/ThirdParty/Synty/PolygonFantasyRivals/Prefabs/FX";
 
-    private const string KatRoot = "Assets/ThirdParty/GrruzamPowerfulSword/Animation/M_Katana_Blade/";
     private const string NRoot = "Assets/ThirdParty/NinjaAnimset/Animation/Humanoid/";
     private const string MkRoot = "Assets/ThirdParty/MagicalKnightSet/Animation/Humanoid/";
 
-    private const string IdlePath = KatRoot + "1_Movements/1__Idle/M_katana_Blade@Idle_ver_A.FBX";
-    private const string WalkPath = KatRoot + "1_Movements/2__Walk/A/M_katana_Blade@Walk_ver_A_Front.FBX";
-    private const string DrawPath = KatRoot + "2_Attacks/0__3Combos/M_katana_Blade@Attack_3Combo_1.FBX";
-    private const string TwinPath = KatRoot + "2_Attacks/2__5Combos/M_katana_Blade@Attack_5Combo_1.FBX";
-    private const string HeavenPath = KatRoot + "2_Attacks/2__5Combos/M_katana_Blade@Attack_5Combo_3.FBX";
-    private const string RushPath = KatRoot + "2_Attacks/3__Dash_Attack/M_katana_Blade@Dash_Attack_ver_B.FBX";
-    private const string StaggerPath = KatRoot + "4_Damages/1__Front/M_katana_Blade@Damage_Front_Big_ver_A.FBX";
-    private const string DiePath = KatRoot + "4_Damages/6__Die/M_katana_Blade@Damage_Die.FBX";
     private const string DieFallbackPath = MkRoot + "dead_02.fbx";
 
     private static readonly Vector3 ArenaCenter = new Vector3(101f, 0f, 150f);
@@ -86,11 +77,17 @@ public static class ProjectRestartBossLord
         var loco = EnsureState(sm, "Locomotion", BuildLocomotionTree(controller), new Vector3(-300, 0));
         sm.defaultState = loco;
 
-        // P1 samurai �X katana takes carry authored root travel for the relay.
-        EnsureState(sm, "DrawSlash", Root(LoadClip(DrawPath, "Attack_3Combo_1")), new Vector3(0, -140), 1.05f);
-        EnsureState(sm, "TwinCut", Root(LoadClip(TwinPath, "Attack_5Combo_1")), new Vector3(0, 0), 1.05f);
-        EnsureState(sm, "HeavenCut", Root(LoadClip(HeavenPath, "Attack_5Combo_3")), new Vector3(0, 140), 0.9f);
-        EnsureState(sm, "RushDraw", Root(LoadClip(RushPath, "Dash_Attack_ver_B")), new Vector3(0, 280), 1.1f);
+        // P1 the Warden — he carries a greatsword, so every cut is an authored Big Sword
+        // take (attack-root, the same config the player's big-sword setup applies to
+        // these clips): the relay consumes the authored travel, his blade does the work.
+        EnsureState(sm, "DrawSlash", Root(LoadClip(BigRoot + "2_Attacks/2__7Combos/M_Big_Sword@Attack_7Combo_1.FBX", "Attack_7Combo_1")), new Vector3(0, -140), 1.0f);
+        EnsureState(sm, "TwinCut", Root(LoadClip(BigRoot + "2_Attacks/2__7Combos/M_Big_Sword@Attack_7Combo_2.FBX", "Attack_7Combo_2")), new Vector3(0, 0), 1.0f);
+        EnsureState(sm, "TwinCut2", Root(LoadClip(BigRoot + "2_Attacks/2__7Combos/M_Big_Sword@Attack_7Combo_3.FBX", "Attack_7Combo_3")), new Vector3(0, 70), 1.0f);
+        EnsureState(sm, "HeavenCut", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_C.FBX", "Skill_C")), new Vector3(0, 140), 0.9f);
+        EnsureState(sm, "RushDraw", Root(LoadClip(BigRoot + "2_Attacks/3__Dash_Attack/M_Big_Sword@Dash_Attack_ver_A.FBX", "Dash_Attack_ver_A")), new Vector3(0, 280), 1.05f);
+        EnsureState(sm, "WolfFang", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_G_ALL.FBX", "Skill_G_ALL")), new Vector3(0, 420), 0.95f);
+        EnsureState(sm, "Bonesunder", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_K.FBX", "Skill_K")), new Vector3(0, 560), 1.0f);
+        EnsureState(sm, "CounterCleave", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_F.FBX", "Skill_F")), new Vector3(0, 700), 1.05f);
 
         // P2 ninja �X _inplace takes: travel is scripted (teleport/dodge/steps),
         // clips keep their own avatar. Faster playback = the ninja phase read.
@@ -110,8 +107,9 @@ public static class ProjectRestartBossLord
         EnsureState(sm, "Revive", LoadClip(MkRoot + "rise_02.fbx", "rise_02"), new Vector3(900, 280), 0.9f);
 
         EnsureState(sm, "Roar", LoadClip(MkRoot + "buff01.fbx", "buff01"), new Vector3(-600, -140), 0.95f);
-        EnsureState(sm, "Stagger", Bake(LoadClip(StaggerPath, "Damage_Front_Big_ver_A")), new Vector3(-600, 0), 1f);
-        var dieClip = LoadClip(DiePath, "Damage_Die");
+        // Big Sword reactions (same feet-baked config as StaggerHeavy / the player's Death).
+        EnsureState(sm, "Stagger", Bake(LoadClip(BigRoot + "4_Damages/1__Front/M_Big_Sword@Damage_Front_Big_ver_A.FBX", "Damage_Front_Big_ver_A")), new Vector3(-600, 0), 1f);
+        var dieClip = LoadClip(BigRoot + "4_Damages/6__Die/M_Big_Sword@Damage_Die.FBX", "Damage_Die");
         EnsureState(sm, "Die", Bake(dieClip != null ? dieClip : LoadClip(DieFallbackPath, "dead_02")), new Vector3(-600, 140), 1f);
         EnsureWardenStates(controller, sm);
 
@@ -135,10 +133,11 @@ public static class ProjectRestartBossLord
             blendParameter = "Speed",
             useAutomaticThresholds = false
         };
-        tree.AddChild(Bake(LoadClip(IdlePath, "Idle_ver_A")), 0f);
-        tree.AddChild(Bake(LoadClip(WalkPath, "Walk_ver_A_Front")), 1f);
+        // The greatsword carry from the first step (Phase 3 slows the same walk further).
+        tree.AddChild(Bake(LoadClip(BigRoot + "1_Movements/1__Idle/M_Big_Sword@Idle.FBX", "Idle")), 0f);
+        tree.AddChild(Bake(LoadClip(BigRoot + "1_Movements/2__Walk/A/M_Big_Sword@Walk_ver_A_Front.FBX", "Walk_ver_A_Front")), 1f);
         var kids = tree.children;
-        kids[1].timeScale = 0.8f;
+        kids[1].timeScale = 0.85f;
         tree.children = kids;
         AssetDatabase.AddObjectToAsset(tree, controller);
         return tree;
@@ -158,7 +157,9 @@ public static class ProjectRestartBossLord
 
         // Phase 2 — still in control.
         EnsureState(sm, "CrimsonSweep", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_H.FBX", "Skill_H")), new Vector3(1200, -280), 0.85f);
-        EnsureState(sm, "KingsSpear", LoadClip(MkRoot + "atk_energy03.fbx", "atk_energy03"), new Vector3(1200, -140), 0.75f);
+        // King's Spear is a lunge, not a cast: the Big Sword dash take (WardenPose holds the thrust stance).
+        EnsureState(sm, "KingsSpear", Root(LoadClip(BigRoot + "2_Attacks/3__Dash_Attack/M_Big_Sword@Dash_Attack_ver_B.FBX", "Dash_Attack_ver_B")), new Vector3(1200, -140), 0.8f);
+        EnsureState(sm, "Cyclone", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_E.FBX", "Skill_E")), new Vector3(1200, -420), 0.9f);
         EnsureState(sm, "Executioner", LoadClip(MkRoot + "atk_overhandslash.fbx", "atk_overhandslash"), new Vector3(1200, 0), 1f);
         EnsureState(sm, "CrownRaise", LoadClip(MkRoot + "atk_energy09_start.fbx", "atk_energy09_start"), new Vector3(1200, 140), 1f);
         EnsureState(sm, "CrownHold", LoadClip(MkRoot + "atk_energy09_loop.fbx", "atk_energy09_loop"), new Vector3(1200, 280), 1f);
@@ -173,6 +174,8 @@ public static class ProjectRestartBossLord
         EnsureState(sm, "CorePlant", plant, new Vector3(1500, 140), 0.8f);
         EnsureState(sm, "RuinousSweep", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_L.FBX", "Skill_L")), new Vector3(1500, 280), 1f);
         EnsureState(sm, "Worldsplitter", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_D.FBX", "Skill_D")), new Vector3(1500, 420), 1f);
+        // Crimson Guillotine: the rising moon-arc into a slam WITH its authored leap travel.
+        EnsureState(sm, "Guillotine", Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@Skill_J.FBX", "Skill_J")), new Vector3(1500, 560), 0.9f);
         EnsureState(sm, "KingsFallCrouch", Bake(LoadClip(BigRoot + "1_Movements/7__Double_Jump/M_Big_Sword@Double_Jump_Start_ZeroHeight.FBX", "Double_Jump_Start_ZeroHeight")), new Vector3(1800, -280), 0.5f);
         EnsureState(sm, "KingsFallHang", Bake(LoadClip(BigRoot + "4_Damages/1__Front/M_Big_Sword@Damage_Front_Flying_ver_A_ZeroHeight.FBX", "Damage_Front_Flying_ver_A_ZeroHeight")), new Vector3(1800, -140), 1f);
         EnsureState(sm, "KingsFallDrop", LoadClip(BigRoot + "2_Attacks/4__Jump_Attack/M_Big_Sword@Jump_Attack_Combo_3_ZeroHeight.FBX", "Jump_Attack_Combo_3_ZeroHeight"), new Vector3(1800, 0), 1.6f);
