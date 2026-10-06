@@ -1,0 +1,35 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8b884a18fd538fd4db1465d27d6ece28, type: 3}
+  m_Name: item_gravewax
+  m_EditorClassIdentifier: Assembly-CSharp::ItemDef
+  itemId: item_gravewax
+  itemName: Grave Wax Bomb
+  shortName: BOMB
+  icon: Bomb
+  description: "Rendered fat and a spiteful spark. Thrown \u2014 70 damage."
+  kind: 0
+  price: 90
+  stackMax: 99
+  effect: 4
+  magnitude: 70
+  projectile:
+    prefab: {fileID: 0}
+    spawnTime: 0.45
+    speed: 18
+    radius: 0.35
+    life: 2
+    damage: 70
+    count: 1
+    spreadDeg: 12
+    homing: 0
+    pierce: 0

@@ -1,0 +1,104 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 39eb49104c4df6349a155343459311ae, type: 3}
+  m_Name: RadiantRush
+  m_EditorClassIdentifier: Assembly-CSharp::WeaponArt
+  contactMotionReviewed: 0
+  bladeEdgeFx: {fileID: 0}
+  ribbonLife: 0.12
+  visualTheme: 0
+  contactMode: 0
+  recoveryTransitionDelay: 0.06
+  trailWindows: []
+  contactHeight: 1.6
+  contactFx: {fileID: 0}
+  artName: Radiant Rush
+  shortName: RUSH
+  stateName: Art2
+  icon: Shard
+  manaCost: 20
+  duration: 1.2727274
+  hitWindows:
+  - {x: 0.4, y: 0.65}
+  rehitInterval: 0
+  damagePerHit: 34
+  poiseDamage: 25
+  range: 3.5
+  arc: 160
+  advance: 1.2
+  useRootMotion: 1
+  rootMotionY: 0
+  cooldown: 4
+  loopState: 
+  loopEndState: 
+  loopEndDuration: 0.45
+  loopMaxTime: 1.6
+  manaPerSecond: 12
+  loopHitInterval: 0.35
+  fxCues:
+  - time: 0.02
+    prefab: {fileID: 2152815855365283743, guid: 55ed09c688dbea947918fbe2344b681e, type: 3}
+    attach: root
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 0
+    scale: 1
+    palette: 4
+    life: 0
+    shake: 0
+    hitstop: 0
+  - time: 0.38
+    prefab: {fileID: 1713218709785206, guid: 6bc2a6e4bc7f76942a0073eaa0f4da4f, type: 3}
+    attach: handR
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 0
+    scale: 1
+    palette: 4
+    life: 0
+    shake: 0.25
+    hitstop: 0
+  projectile:
+    wave: 0
+    waveSize: {x: 2.4, y: 1.6}
+    maxTravel: 0
+    prefab: {fileID: 0}
+    spawnTime: 0.45
+    speed: 18
+    radius: 0.35
+    life: 2
+    damage: 20
+    count: 1
+    spreadDeg: 12
+    homing: 0
+    pierce: 0
+  sfxCues:
+  - time: 0.1
+    id: art.rush
+  - time: 0.38
+    id: art.slash
+  damageKind: 0
+  bloomPunch: 0
+  hitstop: 0.05
+  shake: 0.25
+  summonScale: 1
+  followUp: {fileID: 0}
+  launch: 0
+  spike: 0
+  airChase: 0
+  burst:
+    enabled: 0
+    timeScale: 0.05
+    flashTime: 0.07
+    banner: 1
+    introSfx: art.burst
+    rageSeconds: 15

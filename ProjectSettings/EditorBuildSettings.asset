@@ -6,8 +6,23 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/_Project/Scenes/00_MainMenu.unity
+    guid: 93c9ad8650e3f0749b521018acfbca21
+  - enabled: 1
+    path: Assets/_Project/Scenes/00_TestBlockout.unity
+    guid: 9d1357b80598bb249aec4fd0a84e9146
+  - enabled: 1
     path: Assets/Scenes/SampleScene.unity
     guid: 99c9720ab356a0642a771bea13969a05
+  - enabled: 1
+    path: Assets/_Project/Scenes/02_FoundryTutorial.unity
+    guid: 3f54dfaf450d6f94a921169183539699
+  - enabled: 1
+    path: Assets/_Project/ArtDirection/Archive/03_FoundryDepths_Retired.unity
+    guid: e69fea4acec102848b16fb343cfff459
+  - enabled: 1
+    path: Assets/_Project/Scenes/03_SunkenVault.unity
+    guid: 0b9d5150e5809e848ba1f382d8dae5c0
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   m_UseUCBPForAssetBundles: 0

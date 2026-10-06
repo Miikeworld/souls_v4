@@ -1,0 +1,142 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 39eb49104c4df6349a155343459311ae, type: 3}
+  m_Name: Mooncleaver
+  m_EditorClassIdentifier: Assembly-CSharp::WeaponArt
+  contactMotionReviewed: 0
+  bladeEdgeFx: {fileID: 8337060017738407943, guid: f86652cae250eb741906a7115a87db13, type: 3}
+  ribbonLife: 0.1
+  visualTheme: 1
+  contactMode: 0
+  recoveryTransitionDelay: 0.06
+  trailWindows:
+  - {x: 0.154, y: 0.231}
+  - {x: 0.385, y: 0.447}
+  contactHeight: 1.6
+  contactFx: {fileID: 2574021210937506055, guid: 10246cccbb8ef6a41b85407f8f2c9288, type: 3}
+  artName: Mooncleaver
+  shortName: MOON
+  stateName: Art12
+  icon: Mooncleaver
+  manaCost: 12
+  duration: 1.4590348
+  hitWindows:
+  - {x: 0.4, y: 0.447}
+  rehitInterval: 0
+  damagePerHit: 44
+  poiseDamage: 42
+  range: 3
+  arc: 160
+  advance: 1.2
+  useRootMotion: 1
+  rootMotionY: 1
+  cooldown: 1.8
+  loopState: 
+  loopEndState: 
+  loopEndDuration: 0.45
+  loopMaxTime: 1.6
+  manaPerSecond: 12
+  loopHitInterval: 0.35
+  fxCues:
+  - time: 0.431
+    prefab: {fileID: 5190413275336695495, guid: 24c04f6de9c7ce446977ff2158ee702a, type: 3}
+    attach: floor
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 0
+    scale: 0.9
+    palette: 0
+    life: 0.6
+    shake: 0
+    hitstop: 0
+  - time: 0.154
+    prefab: {fileID: 6120085206706685591, guid: 6e27b425e04dec74d9f3c8de47630885, type: 3}
+    attach: handR
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 1
+    scale: 0.7
+    palette: 0
+    life: 0.11234569
+    shake: 0
+    hitstop: 0
+  - time: 0.385
+    prefab: {fileID: 6120085206706685591, guid: 6e27b425e04dec74d9f3c8de47630885, type: 3}
+    attach: handR
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 1
+    scale: 0.7
+    palette: 0
+    life: 0.1
+    shake: 0
+    hitstop: 0
+  - time: 0.4
+    prefab: {fileID: 8878899700936760066, guid: 933ee65fa62ab0a44b76a54036eb30cf, type: 3}
+    attach: root
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 0
+    scale: 1
+    palette: 0
+    life: 0
+    shake: 0.3
+    hitstop: 0.06
+  - time: 0.58
+    prefab: {fileID: 1643851402782444, guid: 4f703a1da613efc43b08b1d2bdcfd49f, type: 3}
+    attach: root
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 0
+    scale: 1
+    palette: 0
+    life: 0
+    shake: 0.3
+    hitstop: 0.06
+  projectile:
+    wave: 0
+    waveSize: {x: 2.4, y: 1.6}
+    maxTravel: 0
+    prefab: {fileID: 0}
+    spawnTime: 0.45
+    speed: 18
+    radius: 0.35
+    life: 2
+    damage: 20
+    count: 1
+    spreadDeg: 12
+    homing: 0
+    pierce: 0
+  sfxCues:
+  - time: 0.431
+    id: art.slash
+  damageKind: 0
+  bloomPunch: 0.8
+  hitstop: 0.07
+  shake: 0.4
+  family: 1
+  aim: 0
+  reaction: 1
+  staminaCost: 0
+  summonScale: 1.45
+  followUp: {fileID: 0}
+  launch: 0
+  launchMax: 0
+  spike: 0
+  airChase: 0
+  burst:
+    enabled: 0
+    timeScale: 0.05
+    flashTime: 0.07
+    banner: 1
+    introSfx: art.burst
+    rageSeconds: 15

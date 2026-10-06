@@ -1,0 +1,106 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 83fb1774403a08a4f931ce3da84922fc, type: 3}
+  m_Name: Katana
+  m_EditorClassIdentifier: Assembly-CSharp::WeaponSet
+  displayName: Katana
+  weaponPrefab: {fileID: 6429421523800984514, guid: f4c7d0f5c44c71d4d9f9004ca7469084, type: 3}
+  socketNameHint: 
+  handLocalPosition: {x: 8.7, y: 1.6, z: -0.6}
+  handLocalEuler: {x: 346.54956, y: 177.90648, z: 93.82066}
+  bladeAxis: {x: 0, y: 0, z: 1}
+  bladeGeometryCalibrated: 1
+  bladeBaseLocal: {x: 0, y: 0, z: 0.21601819}
+  bladeTipLocal: {x: 0, y: 0, z: 1.1085484}
+  bladeRoll: 90
+  weaponRotOffset: {x: 0, y: 0, z: 0}
+  weaponPosOffset: {x: 0, y: 0, z: 0}
+  socketDeltaScale: 0
+  handLocalScale: {x: 1.0000008, y: 1.0000015, z: 1.0000019}
+  overrideController: {fileID: 22100000, guid: dd6988cd54e8a7845a018d0e4dfdc17a, type: 2}
+  moveSpeed: 4
+  dodgeFront: {fileID: 7400000, guid: 103c599a61701d2438a627ec5c47ad06, type: 3}
+  dodgeBack: {fileID: 7400000, guid: 42badf555525ffe46978c7aa4863b5d5, type: 3}
+  dodgeLeft: {fileID: 7400000, guid: 2591efb33c8fc544f8489279b6269803, type: 3}
+  dodgeRight: {fileID: 7400000, guid: f2708ac5b96d0c442aa3193eef648b78, type: 3}
+  backstep: {fileID: 7400000, guid: 42badf555525ffe46978c7aa4863b5d5, type: 3}
+  dodgeDistance: 3.4
+  backstepDistance: 1.6
+  dodgeDuration: 0.5
+  backstepDuration: 0.32
+  iFrameStart: 0.06
+  iFrameEnd: 0.23
+  dodgeCooldown: 0.18
+  dodgeEntrySpeed: 1.4
+  dodgeExitSpeed: 0.7
+  swingRibbon: 1
+  ribbonTint: {r: 0.95, g: 0.9, b: 1, a: 1}
+  ribbonBody: {r: 0.5, g: 0.2, b: 0.95, a: 1}
+  impactTint: {r: 0.62, g: 0.3, b: 1, a: 1}
+  edgeFx: {fileID: 0}
+  contactFx: {fileID: 0}
+  swingSfx: 
+  attacks:
+  - clip: {fileID: 7400000, guid: f3d1225ae8d42924fa0698b1e2a4057d, type: 3}
+    duration: 0.83333343
+    hitStart: 0.3166667
+    hitEnd: 0.5166667
+    damage: 18
+    poiseDamage: 0
+    stepDistance: 1.2
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: c1219d3062d7b3741bb488877e8f613c, type: 3}
+    duration: 0.8571429
+    hitStart: 0.32571432
+    hitEnd: 0.53142864
+    damage: 20
+    poiseDamage: 0
+    stepDistance: 1
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: 9750ad9c43c60b549a309193b19d7300, type: 3}
+    duration: 0.7407407
+    hitStart: 0.28148147
+    hitEnd: 0.45925924
+    damage: 22
+    poiseDamage: 0
+    stepDistance: 0.9
+    advanceDistance: 1
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: 58e6b7c008efa8446b9a6fb126226358, type: 3}
+    duration: 0.61728394
+    hitStart: 0.2345679
+    hitEnd: 0.38271606
+    damage: 40
+    poiseDamage: 0
+    stepDistance: 0.8
+    advanceDistance: 1
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  attackRange: 2.6
+  attackArc: 180

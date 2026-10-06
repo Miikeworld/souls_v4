@@ -1,0 +1,85 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 39eb49104c4df6349a155343459311ae, type: 3}
+  m_Name: ArcBlade
+  m_EditorClassIdentifier: Assembly-CSharp::WeaponArt
+  contactMotionReviewed: 0
+  bladeEdgeFx: {fileID: 0}
+  ribbonLife: 0.12
+  visualTheme: 1
+  contactMode: 2
+  recoveryTransitionDelay: 0.06
+  trailWindows: []
+  contactHeight: 1.6
+  contactFx: {fileID: 0}
+  artName: Arc Blade
+  shortName: ARC
+  stateName: Art1
+  icon: Shard
+  manaCost: 15
+  duration: 0.969697
+  hitWindows:
+  - {x: 0.32, y: 0.55}
+  rehitInterval: 0
+  damagePerHit: 30
+  poiseDamage: 25
+  range: 3
+  arc: 160
+  advance: 1.2
+  useRootMotion: 1
+  rootMotionY: 0
+  cooldown: 1.6
+  loopState: 
+  loopEndState: 
+  loopEndDuration: 0.45
+  loopMaxTime: 1.6
+  manaPerSecond: 12
+  loopHitInterval: 0.35
+  fxCues: []
+  projectile:
+    wave: 1
+    waveSize: {x: 2.4, y: 1.6}
+    maxTravel: 12
+    prefab: {fileID: 0}
+    spawnTime: 0.42
+    speed: 18
+    radius: 0.35
+    life: 0.7666667
+    damage: 30
+    count: 1
+    spreadDeg: 12
+    homing: 0
+    pierce: 1
+  sfxCues:
+  - time: 0.28
+    id: art.slash
+  damageKind: 0
+  bloomPunch: 0
+  hitstop: 0
+  shake: 0.25
+  family: 0
+  aim: 1
+  reaction: 1
+  staminaCost: 0
+  summonScale: 1
+  followUp: {fileID: 0}
+  launch: 0
+  launchMax: 0
+  spike: 0
+  airChase: 0
+  burst:
+    enabled: 0
+    timeScale: 0.05
+    flashTime: 0.07
+    banner: 1
+    introSfx: art.burst
+    rageSeconds: 15

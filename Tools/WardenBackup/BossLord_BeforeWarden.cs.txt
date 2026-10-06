@@ -1,0 +1,645 @@
+// Backup of Assets/_Project/Scripts/Core/BossLord.cs as it was before the
+// Last Warden Phase 2/3 rework (2026-10-06). Assets/_Project is untracked in git,
+// so this is the only copy. Rename to .cs and drop back in to restore.
+using System.Collections.Generic;
+using UnityEngine;
+
+/// <summary>
+/// Dark Lord boss brain — THREE phases behind a fog gate. Same contract as
+/// BossGolem (Move table with normalized hit windows, CrossFade states by
+/// name in BossLordBase.controller, poise break, IRootMotionOwner XZ strikes):
+///
+///   P1 samurai — katana reads (DrawSlash/TwinCut/HeavenCut) + RushDraw closer.
+///   P2 ninja   — HP &lt;= phaseAt: roar beat, then teleports, kunai throws,
+///                fast combo_01 chain and reactive avoid dodges.
+///   P3 magic   — ON DEATH: intercepts Died, Health.Revive(reviveAt) brings it
+///                back where it fell (no home snap), rise_02 + FX, homing
+///                fireballs / AOE slam / empowered edge. Second Died is real.
+///
+/// Teleport and projectile moves are first-class Move entries: a `teleport`
+/// Move runs the out→reposition→in sequence, a Move with `spec` fires
+/// ArtProjectile.Launch at its window instead of a melee Strike.
+/// ResetAll() rides GameLoop's death/rest resets beside BossGolem.ResetAll.
+/// </summary>
+[RequireComponent(typeof(Health))]
+public sealed class BossLord : MonoBehaviour, IRootMotionOwner, IBossEngage
+{
+    private enum Mode { Dormant, Chase, Attack, Roar, Staggered, Teleport, Dodge, Revive }
+
+    private sealed class Move
+    {
+        public int id;                      // Animator.StringToHash(state name)
+        public Vector2[] windows;           // normalized hit/cast windows in the clip
+        public float range, arc, damage;
+        public float cooldown;
+        public float nextAllowed;           // time.time gate
+        public float aoeRadius;             // >0 = radial slam, arc ignored
+        public float pickMin, pickMax;      // selection band — pickMax 0 = use range
+        public float weight = 1f;           // selection odds vs other candidates
+        public float trackAt;               // face until this nt; 0 = first window start
+        public int win;
+        public bool effectPlayed;
+        public float sampledTime;
+        public bool struck;
+        public ProjectileSpec spec;         // non-null = ranged cast at the window
+        public bool teleport;               // runs the out→blink→in sequence
+        public bool chainOnly;              // never picked — only entered via next
+        public Move next;                   // forced follow-up while player stays in chainRange
+        public float chainRange;
+    }
+
+    [Header("Identity")]
+    [SerializeField] private string displayName = "Vess, Hollow Blade";
+    [Tooltip("HP fraction where the Roar transition fires and the ninja phase unlocks.")]
+    [SerializeField, Range(0.1f, 0.9f)] private float phaseAt = 0.5f;
+    [Tooltip("HP fraction restored by the death-interrupt revive (phase 3).")]
+    [SerializeField, Range(0.1f, 0.9f)] private float reviveAt = 0.4f;
+
+    [Header("Movement")]
+    [SerializeField, Min(0.5f)] private float walkSpeed = 2.2f;
+    [SerializeField, Min(1f)] private float phase2Haste = 1.3f;
+    [SerializeField, Min(1f)] private float phase3Haste = 1.1f;
+    [SerializeField, Min(0.5f)] private float leashRange = 45f;
+    [SerializeField, Min(60f)] private float turnSpeed = 320f;
+    [SerializeField] private float gravity = -20f;
+
+    [Header("Ninja")]
+    [SerializeField, Min(1f)] private float teleportRange = 3.5f;
+    [SerializeField, Min(10f)] private float flankAngle = 75f;
+    [SerializeField, Min(0f)] private float dodgeChance = 0.3f;
+    [SerializeField, Min(0.5f)] private float dodgeSpeed = 2.6f;
+
+    [Header("Poise")]
+    [SerializeField, Min(0f)] private float poiseMax = 80f;
+    [SerializeField, Min(0f)] private float poiseRegen = 8f;
+    [SerializeField, Min(0f)] private float poiseRegenDelay = 1.8f;
+    [SerializeField, Min(0.5f)] private float staggerTime = 1.6f;
+
+    [Header("Ranged specs (prefab wired by the setup tool)")]
+    [SerializeField] private ProjectileSpec kunaiSpec = new() { count = 3, spreadDeg = 14f, speed = 22f, damage = 12f, radius = 0.3f, life = 2.5f, spawnTime = 0.45f };
+    [SerializeField] private ProjectileSpec pyreSpec = new() { count = 5, spreadDeg = 20f, speed = 16f, damage = 16f, radius = 0.35f, life = 3f, homing = true, spawnTime = 0.5f };
+
+    [Header("Presentation")]
+    [SerializeField] private Animator bossAnimator;
+    [SerializeField] private FxCue roarFx;
+    [SerializeField] private FxCue slamFx;
+    [SerializeField] private FxCue reviveFx;
+    [SerializeField] private FxCue teleportFx;
+
+    // ---------- move tables (state names match BossLordBase.controller) ----------
+
+    private Move[] PhaseMoves() => phase == 0 ? p1Moves : phase == 1 ? p2Moves : p3Moves;
+    private Move[] p1Moves, p2Moves, p3Moves;
+    private Move pyreMove;   // cached for the teleport→cast follow-up
+
+    private void BuildMoves()
+    {
+        // pickMin/pickMax = the distance band the move is chosen in (pickMax 0
+        // = use range). trackAt = last normalized point the lord still steers —
+        // after that the swing is committed and sidestepping beats it.
+        var draw = new Move { id = Animator.StringToHash("DrawSlash"), range = 4f, arc = 150f, damage = 26f, cooldown = 1.6f,
+                              pickMin = 0f, pickMax = 4.4f, weight = 1.2f, trackAt = 0.34f,
+                              windows = new[] { new Vector2(0.40f, 0.56f) } };
+        var twin = new Move { id = Animator.StringToHash("TwinCut"), range = 3.8f, arc = 150f, damage = 20f, cooldown = 2.2f,
+                              pickMin = 0f, pickMax = 4.2f, weight = 1.0f, trackAt = 0.26f,
+                              windows = new[] { new Vector2(0.28f, 0.40f), new Vector2(0.60f, 0.72f) } };
+        var heaven = new Move { id = Animator.StringToHash("HeavenCut"), range = 4.2f, arc = 120f, damage = 38f, cooldown = 3.6f,
+                                pickMin = 1.5f, pickMax = 4.6f, weight = 0.7f, trackAt = 0.42f,
+                                windows = new[] { new Vector2(0.52f, 0.66f) } };
+        // Gap-closer, not a melee pick — only chosen while it can still travel.
+        var rush = new Move { id = Animator.StringToHash("RushDraw"), range = 4.5f, arc = 90f, damage = 30f, cooldown = 5f,
+                              pickMin = 4.0f, pickMax = 10f, weight = 1.0f, trackAt = 0.30f,
+                              windows = new[] { new Vector2(0.45f, 0.62f) } };
+        var kunai = new Move { id = Animator.StringToHash("KunaiThrow"), range = 14f, damage = 0f, cooldown = 4.5f,
+                               pickMin = 3f, pickMax = 14f, weight = 1.0f,
+                               spec = kunaiSpec, windows = new[] { new Vector2(0.42f, 0.5f) } };
+        // range>0 now — pickMax was 0->range->0 so the blink could never roll in.
+        var teleport = new Move { id = Animator.StringToHash("TeleportOut"), teleport = true, damage = 0f, cooldown = 6f,
+                                  pickMin = 2f, pickMax = 16f, weight = 0.8f };
+        p1Moves = new[] { draw, twin, heaven, rush };
+        // ShadowJab is a true combo: only Jab1 is picked; 2 and 3 chain while
+        // the player stays inside chainRange — breaking out mid-string whiffs
+        // the follow-up instead of freezing the sequence.
+        var jab3 = new Move { id = Animator.StringToHash("ShadowJab3"), range = 3.6f, arc = 130f, damage = 18f,
+                              chainOnly = true, trackAt = 0.30f,
+                              windows = new[] { new Vector2(0.35f, 0.55f) } };
+        var jab2 = new Move { id = Animator.StringToHash("ShadowJab2"), range = 3.4f, arc = 130f, damage = 14f,
+                              chainOnly = true, next = jab3, chainRange = 3.6f, trackAt = 0.30f,
+                              windows = new[] { new Vector2(0.35f, 0.55f) } };
+        p2Moves = new[]
+        {
+            new Move { id = Animator.StringToHash("ShadowJab1"), range = 3.4f, arc = 130f, damage = 14f, cooldown = 2.4f,
+                       pickMin = 0f, pickMax = 3.8f, weight = 1.3f, next = jab2, chainRange = 4f, trackAt = 0.30f,
+                       windows = new[] { new Vector2(0.35f, 0.55f) } },
+            kunai, teleport, draw, twin,
+        };
+        teleport = new Move { id = Animator.StringToHash("TeleportOut"), teleport = true, damage = 0f, cooldown = 4f,
+                              pickMin = 2f, pickMax = 16f, weight = 1.0f };
+        pyreMove = new Move { id = Animator.StringToHash("PyreCast"), range = 18f, damage = 0f, cooldown = 4f,
+                              pickMin = 5f, pickMax = 18f, weight = 1.1f,
+                              spec = pyreSpec, windows = new[] { new Vector2(0.45f, 0.52f) } };
+        p3Moves = new[]
+        {
+            pyreMove,
+            new Move { id = Animator.StringToHash("AshSlam"), range = 0f, arc = 360f, damage = 34f, cooldown = 5f,
+                       pickMin = 0f, pickMax = 5.5f, weight = 1.0f, trackAt = 0.42f,
+                       windows = new[] { new Vector2(0.52f, 0.60f) }, aoeRadius = 5.5f },
+            new Move { id = Animator.StringToHash("EmberEdge"), range = 4.2f, arc = 140f, damage = 30f, cooldown = 2.6f,
+                       pickMin = 0f, pickMax = 4.6f, weight = 1.0f, trackAt = 0.34f,
+                       windows = new[] { new Vector2(0.40f, 0.60f) } },
+            kunai, teleport,
+        };
+    }
+
+    // ---------- state ----------
+
+    private static readonly int SpeedId = Animator.StringToHash("Speed");
+    private static readonly int LocomotionId = Animator.StringToHash("Locomotion");
+    private static readonly int RoarId = Animator.StringToHash("Roar");
+    private static readonly int StaggerId = Animator.StringToHash("Stagger");
+    private static readonly int DieId = Animator.StringToHash("Die");
+    private static readonly int TeleportOutId = Animator.StringToHash("TeleportOut");
+    private static readonly int TeleportInId = Animator.StringToHash("TeleportIn");
+    private static readonly int ReviveId = Animator.StringToHash("Revive");
+
+    private static readonly List<BossLord> all = new();
+
+    /// <summary>Any living, engaged Dark Lord — WeaponSocket reads this beside BossGolem.AnyEngaged.</summary>
+    public static bool AnyEngaged
+    {
+        get
+        {
+            for (var i = 0; i < all.Count; i++) if (all[i].Engaged) return true;
+            return false;
+        }
+    }
+    public bool Engaged => health != null && !health.IsDead && mode != Mode.Dormant;
+
+    // IRootMotionOwner — only strikes consume authored XZ; teleports/dodges
+    // are scripted so the phase gimmick can't be eaten by the relay.
+    public bool DriveRootMotion => mode == Mode.Attack;
+    public bool AllowRootY => false;
+
+    private Health health;
+    private CharacterController cc;
+    private Transform player;
+    private PlayerHealth playerHealth;
+    private PlayerState playerState;
+    private Mode mode = Mode.Dormant;
+    private int phase;                      // 0 samurai, 1 ninja, 2 magic
+    private bool revived;                   // phase-3 revive already spent
+    private bool roared;
+    private Move current;
+    private int lastMoveId;                 // anti-repeat — same move can't chain-pick
+    private float modeT, poise, poiseWait, verticalSpeed;
+    private int dodgeSide;                  // ±1 during Mode.Dodge
+    private bool teleported;                // blink already happened this Teleport
+    private bool pyreFollow;                // teleport→cast follow-up armed
+
+    private void OnEnable() => all.Add(this);
+    private void OnDisable() => all.Remove(this);
+
+    private void Awake()
+    {
+        health = GetComponent<Health>();
+        health.Damaged += OnDamaged;
+        health.Died += OnDied;
+        cc = GetComponent<CharacterController>();
+        if (bossAnimator == null) bossAnimator = GetComponentInChildren<Animator>();
+        if (bossAnimator != null) health.SuppressDeathMotion = true;
+        poise = poiseMax;
+        BuildMoves();
+        var p = FindFirstObjectByType<PlayerLocomotion>();
+        if (p != null)
+        {
+            player = p.transform;
+            playerHealth = p.GetComponent<PlayerHealth>();
+            playerState = p.GetComponent<PlayerState>();
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (health != null) { health.Damaged -= OnDamaged; health.Died -= OnDied; }
+    }
+
+    /// <summary>Fog gate / trigger calls this — the fight starts.</summary>
+    public void Engage()
+    {
+        if (health.IsDead || mode != Mode.Dormant) return;
+        mode = Mode.Chase;
+        GameHud.Boss(health, displayName, phaseAt);
+    }
+
+    /// <summary>Souls reset: back to spawn, full HP, dormant, gate reopens.</summary>
+    public void Respawn()
+    {
+        health.ResetHealth();
+        mode = Mode.Dormant;
+        phase = 0;
+        revived = roared = teleported = pyreFollow = false;
+        current = null;
+        poise = poiseMax;
+        poiseWait = 0f;
+        verticalSpeed = 0f;
+        if (bossAnimator != null) bossAnimator.Rebind();
+        GameHud.BossClear();
+    }
+
+    /// <summary>Every boss back to its spawn — called beside BossGolem.ResetAll.</summary>
+    public static void ResetAll()
+    {
+        for (var i = 0; i < all.Count; i++) all[i].Respawn();
+    }
+
+    private void OnDied()
+    {
+        current = null;
+        if (!revived)
+        {
+            // Phase 3 — the kill "lands", then it gets back up.
+            revived = true;
+            phase = 2;
+            health.Revive(reviveAt);
+            mode = Mode.Revive;
+            modeT = 0f;
+            if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(ReviveId, 0.15f, 0);
+            ArtFx.Spawn(reviveFx, transform, bossAnimator, player);
+            GameHud.Toast(displayName + " — REBORN");
+            var cam = FindFirstObjectByType<PlayerCameraController>();
+            if (cam != null) cam.Shake(0.55f);
+            return;
+        }
+        SoulsWallet.Add(health.SoulsReward);
+        GameHud.BossClear();
+        GameHud.Banner("GREAT ENEMY FELLED", 3f);
+        if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(DieId, 0.15f, 0);
+    }
+
+    private void OnDamaged(float amount, Vector3 from, float poiseDamage, ReactionProfile reaction)
+    {
+        if (health.IsDead || mode == Mode.Dormant) return;
+        // Teleport/revive/dodge can't be posture-broken — the phase gimmick
+        // would get interrupted by stray hits and read as a soft-lock.
+        if (mode == Mode.Teleport || mode == Mode.Revive || mode == Mode.Dodge) return;
+        // Ninja phase: chance to slip the follow-up with a quickstep.
+        if (phase == 1 && mode == Mode.Chase && Random.value < dodgeChance)
+        {
+            EnterDodge(from);
+            return;
+        }
+        if (poiseMax <= 0f) return;
+        poise -= poiseDamage;
+        poiseWait = poiseRegenDelay;
+        if (poise > 0f || mode == Mode.Staggered) return;
+        poise = poiseMax;
+        mode = Mode.Staggered;
+        modeT = 0f;
+        current = null;
+        if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(StaggerId, 0.12f, 0);
+    }
+
+    private void Update()
+    {
+        if (health.IsDead || player == null) return;
+        if (playerHealth != null && playerHealth.IsDead)
+        {
+            Respawn();
+            return;
+        }
+        if (mode == Mode.Dormant) return;
+
+        var dt = Time.deltaTime;
+        modeT += dt;
+        if (poiseWait > 0f) poiseWait -= dt;
+        else if (poise < poiseMax) poise = Mathf.Min(poiseMax, poise + poiseRegen * dt);
+
+        var toPlayer = player.position - transform.position;
+        toPlayer.y = 0f;
+        var dist = toPlayer.magnitude;
+        if (dist > leashRange) { Respawn(); return; }
+
+        var haste = phase == 1 ? phase2Haste : phase == 2 ? phase3Haste : 1f;
+
+        switch (mode)
+        {
+            case Mode.Chase:
+                Face(toPlayer, dt);
+                if (!roared && health.Current <= health.Max * phaseAt) { EnterRoar(); break; }
+                // Any ready move in its band gates the attack — RushDraw's
+                // lunge and the casts reach past melee, so engageRange isn't
+                // the hard gate it used to be.
+                if (ReadyAny(dist))
+                {
+                    var move = PickMove(dist);
+                    if (move != null) { EnterMove(move); break; }
+                }
+                SetSpeed(1f);
+                Step(toPlayer.normalized * walkSpeed * haste * dt);
+                break;
+
+            case Mode.Attack:
+                TickAttack(dt);
+                break;
+
+            case Mode.Teleport:
+                TickTeleport(dt);
+                ApplyGravity(dt);
+                break;
+
+            case Mode.Dodge:
+                if (DodgeDone()) { ToChase(); break; }
+                Step(transform.right * dodgeSide * dodgeSpeed * dt);
+                break;
+
+            case Mode.Revive:
+                // rise_02 ends with its clip; timeout guards a missing state.
+                if (modeT >= 4f || StateDone(ReviveId))
+                {
+                    GameHud.Boss(health, displayName + " — REBORN", phaseAt);
+                    ToChase();
+                }
+                ApplyGravity(dt);
+                break;
+
+            case Mode.Roar:
+                if (bossAnimator == null || modeT >= 3f || StateDone(RoarId))
+                    ToChase();
+                ApplyGravity(dt);
+                break;
+
+            case Mode.Staggered:
+                if (modeT >= staggerTime) ToChase();
+                ApplyGravity(dt);
+                break;
+        }
+    }
+
+    private void EnterRoar()
+    {
+        roared = true;
+        phase = 1;
+        mode = Mode.Roar;
+        modeT = 0f;
+        current = null;
+        if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(RoarId, 0.2f, 0);
+        GameHud.Toast(displayName + " — UNSHACKLED");
+        ArtFx.Spawn(roarFx, transform, bossAnimator, player);
+        var cam = FindFirstObjectByType<PlayerCameraController>();
+        if (cam != null) cam.Shake(0.5f);
+    }
+
+    /// <summary>Any ready move whose distance band brackets the player — the
+    /// single gate for entering Attack (melee, casts, teleport, RushDraw).</summary>
+    private bool ReadyAny(float dist)
+    {
+        foreach (var m in PhaseMoves())
+            if (ReadyInBand(m, dist)) return true;
+        return false;
+    }
+
+    private static bool ReadyInBand(Move m, float dist)
+        => !m.chainOnly && Time.time >= m.nextAllowed && dist >= m.pickMin && dist <= PickReach(m) * 1.15f;
+
+    private static float PickReach(Move m)
+        => m.pickMax > 0f ? m.pickMax : m.aoeRadius > 0f ? m.aoeRadius : m.range;
+
+    /// <summary>Weighted roll among moves that are off cooldown AND inside
+    /// their distance band; the last move used is excluded when alternatives
+    /// exist so the fight can't repeat-pick. chainOnly moves only enter via
+    /// their predecessor's `next`.</summary>
+    private Move PickMove(float dist)
+    {
+        var moves = PhaseMoves();
+        var eligible = 0;
+        var total = 0f;
+        foreach (var m in moves) if (ReadyInBand(m, dist)) eligible++;
+        foreach (var m in moves)
+            if (ReadyInBand(m, dist) && !(eligible > 1 && m.id == lastMoveId)) total += m.weight;
+        if (total <= 0f) return null;
+
+        var roll = Random.value * total;
+        foreach (var m in moves)
+        {
+            if (!ReadyInBand(m, dist) || (eligible > 1 && m.id == lastMoveId)) continue;
+            roll -= m.weight;
+            if (roll <= 0f) return m;
+        }
+        return null;
+    }
+
+    private void EnterMove(Move m)
+    {
+        current = m;
+        if (!m.chainOnly) lastMoveId = m.id;
+        m.win = 0;
+        m.struck = false;
+        m.effectPlayed = false;
+        m.sampledTime = 0f;
+        m.nextAllowed = Time.time + m.cooldown;
+        SetSpeed(0f);
+        if (m.teleport)
+        {
+            mode = Mode.Teleport;
+            modeT = 0f;
+            teleported = false;
+            if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(TeleportOutId, 0.15f, 0);
+            return;
+        }
+        mode = Mode.Attack;
+        modeT = 0f;
+        if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(m.id, 0.15f, 0);
+    }
+
+    private void EnterDodge(Vector3 from)
+    {
+        mode = Mode.Dodge;
+        modeT = 0f;
+        current = null;
+        var side = transform.InverseTransformDirection(from - transform.position).x < 0f ? 1f : -1f;
+        dodgeSide = side > 0f ? 1 : -1;
+        var id = Animator.StringToHash(dodgeSide > 0 ? "DodgeR" : "DodgeL");
+        if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(id, 0.1f, 0);
+    }
+
+    private bool DodgeDone()
+    {
+        if (bossAnimator == null) return modeT >= 0.8f;
+        var info = bossAnimator.GetCurrentAnimatorStateInfo(0);
+        var id = Animator.StringToHash(dodgeSide > 0 ? "DodgeR" : "DodgeL");
+        if (!IsState(info, id)) return modeT >= 1.6f;
+        return info.normalizedTime >= 1f || modeT >= 1.6f;
+    }
+
+    /// <summary>Out-clip plays → blink behind/beside the player → in-clip.</summary>
+    private void TickTeleport(float dt)
+    {
+        if (!teleported)
+        {
+            if (!StateDone(TeleportOutId) && modeT < 2f) return;
+            teleported = true;
+            var ang = Random.value < 0.5f ? -flankAngle : flankAngle;
+            var dir = Quaternion.AngleAxis(ang, Vector3.up) * -player.forward;
+            var pos = player.position + dir.normalized * teleportRange;
+            pos.y = FloorAt(pos);
+            transform.position = pos;
+            transform.rotation = Quaternion.LookRotation(FlatDir(player.position - transform.position), Vector3.up);
+            if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(TeleportInId, 0.08f, 0);
+            ArtFx.Spawn(teleportFx, transform, bossAnimator, player);
+            // P3: chance to chain straight into the fireball cast.
+            pyreFollow = phase == 2 && pyreMove != null && Time.time >= pyreMove.nextAllowed && Random.value < 0.5f;
+            return;
+        }
+        if (!StateDone(TeleportInId) && modeT < 4f) return;
+        if (pyreFollow)
+        {
+            pyreFollow = false;
+            EnterMove(pyreMove);
+            return;
+        }
+        ToChase();
+        current = null;
+    }
+
+    private void TickAttack(float dt)
+    {
+        var m = current;
+        if (m == null || bossAnimator == null) { mode = Mode.Chase; return; }
+        var info = bossAnimator.GetCurrentAnimatorStateInfo(0);
+        if (!IsState(info, m.id))
+        {
+            if (modeT > 4f) { ToChase(); current = null; }
+            return;
+        }
+        var nt = info.normalizedTime;
+
+        // Track during the windup only — once the swing commits (trackAt, by
+        // default the first hit window) the blade can't follow a sidestep.
+        var trackEnd = m.trackAt > 0f ? m.trackAt : (m.windows.Length > 0 ? m.windows[0].x : 1f);
+        if (nt < trackEnd && !m.teleport)
+        {
+            var to = player.position - transform.position;
+            to.y = 0f;
+            Face(to.normalized, dt);
+        }
+
+        // Sweep for the entire authored contact window, once per successful hit.
+        // Include a crossed window on slow frames instead of dropping that attack.
+        while (m.win < m.windows.Length && nt >= m.windows[m.win].x)
+        {
+            if (!m.struck && m.sampledTime <= m.windows[m.win].y)
+            {
+                if (m.spec != null) { FireProjectile(m); m.struck = true; }
+                else m.struck = Strike(m, !m.effectPlayed);
+                m.effectPlayed = true;
+            }
+            if (nt <= m.windows[m.win].y) break;
+            m.win++; m.struck = false; m.effectPlayed = false;
+        }
+        m.sampledTime = nt;
+        if (nt >= 1f)
+        {
+            // Combo link — the follow-up only fires while the player stays in
+            // its range; rolling out mid-string ends the sequence early.
+            var dist = player != null ? Vector3.ProjectOnPlane(
+                player.position - transform.position, Vector3.up).magnitude : 999f;
+            if (m.next != null && dist <= m.chainRange) { EnterMove(m.next); return; }
+            ToChase();
+            current = null;
+        }
+    }
+
+    private void FireProjectile(Move m)
+    {
+        var origin = transform.position + Vector3.up * 1.4f + transform.forward * 0.6f;
+        var dir = (player.position + Vector3.up * 1.1f - origin).normalized;
+        ArtProjectile.Launch(m.spec, origin, dir, player, transform, 20f);
+    }
+
+    private void ToChase()
+    {
+        mode = Mode.Chase;
+        modeT = 0f;
+        if (bossAnimator != null
+            && !IsState(bossAnimator.GetCurrentAnimatorStateInfo(0), LocomotionId))
+            bossAnimator.CrossFadeInFixedTime(LocomotionId, 0.3f, 0);
+    }
+
+    /// <summary>Melee arc sweep or radial AOE — same contract as BossGolem's.</summary>
+    private bool Strike(Move m, bool present = true)
+    {
+        if (playerHealth == null) return false;
+        var invuln = (playerState != null && playerState.IsInvulnerable)
+                     || playerHealth.Invulnerable;
+        bool hit;
+        if (m.aoeRadius > 0f)
+        {
+            if (present && slamFx != null && slamFx.prefab != null)
+            {
+                slamFx.offset = transform.forward * 2f;
+                ArtFx.Spawn(slamFx, transform, bossAnimator, player);
+            }
+            var cam = FindFirstObjectByType<PlayerCameraController>();
+            if (present && cam != null) cam.Shake(0.35f);
+            var flat = Vector3.ProjectOnPlane(player.position - transform.position, Vector3.up);
+            hit = flat.magnitude <= m.aoeRadius && Mathf.Abs(player.position.y - transform.position.y) < 2.5f;
+        }
+        else
+        {
+            var to = player.position - transform.position;
+            to.y = 0f;
+            hit = to.magnitude <= m.range
+                  && Vector3.Angle(transform.forward, to) <= m.arc * 0.5f
+                  && Mathf.Abs(player.position.y - transform.position.y) < 3f;
+        }
+        if (hit && !invuln) { playerHealth.TakeDamage(m.damage, transform.position); return true; }
+        return false;
+    }
+
+    /// <summary>Highest ground point under a position — teleport lands on
+    /// floor, not inside terrain or hanging in air.</summary>
+    private float FloorAt(Vector3 pos)
+    {
+        var hits = Physics.RaycastAll(pos + Vector3.up * 4f, Vector3.down, 8f);
+        var best = pos.y;
+        var found = false;
+        foreach (var h in hits)
+        {
+            var t = h.transform;
+            if (t.root == transform.root || t.root == player.root) continue;
+            if (!found || h.point.y > best) { best = h.point.y; found = true; }
+        }
+        return found ? best + 0.05f : pos.y;
+    }
+
+    private bool IsState(AnimatorStateInfo info, int id) => info.shortNameHash == id;
+    private bool StateDone(int id)
+    {
+        if (bossAnimator == null) return true;
+        var info = bossAnimator.GetCurrentAnimatorStateInfo(0);
+        return IsState(info, id) && info.normalizedTime >= 1f;
+    }
+
+    private static Vector3 FlatDir(Vector3 v) { v.y = 0f; return v.sqrMagnitude < 0.001f ? Vector3.forward : v.normalized; }
+
+    private void Face(Vector3 dir, float dt)
+    {
+        if (dir.sqrMagnitude < 0.0001f) return;
+        var want = Quaternion.LookRotation(dir.normalized, Vector3.up);
+        transform.rotation = Quaternion.RotateTowards(transform.rotation, want, turnSpeed * dt);
+    }
+
+    private void Step(Vector3 delta)
+    {
+        if (cc == null) { transform.position += delta; return; }
+        verticalSpeed = cc.isGrounded ? -2f : Mathf.Max(verticalSpeed + gravity * Time.deltaTime, -50f);
+        cc.Move(delta + Vector3.up * verticalSpeed * Time.deltaTime);
+    }
+
+    private void ApplyGravity(float dt) => Step(Vector3.zero);
+
+    private void SetSpeed(float v)
+    {
+        if (bossAnimator != null) bossAnimator.SetFloat(SpeedId, v);
+    }
+}

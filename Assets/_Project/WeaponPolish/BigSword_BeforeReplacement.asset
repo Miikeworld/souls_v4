@@ -1,0 +1,142 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 83fb1774403a08a4f931ce3da84922fc, type: 3}
+  m_Name: BigSword_BeforeReplacement
+  m_EditorClassIdentifier: Assembly-CSharp::WeaponSet
+  displayName: Big Sword
+  weaponPrefab: {fileID: 100000, guid: 0466dd790c0cfd34db4afe171eadd2a6, type: 3}
+  socketNameHint: 
+  handLocalPosition: {x: 8.6, y: 0.6, z: -7.7}
+  handLocalEuler: {x: 2.244295, y: 163.52782, z: 118.831154}
+  bladeAxis: {x: 0, y: 0, z: 1}
+  bladeGeometryCalibrated: 1
+  bladeBaseLocal: {x: -0.00000047683716, y: 0.00000017881393, z: 0.28907102}
+  bladeTipLocal: {x: -0.00000047683716, y: 0.00000017881393, z: 1.5738312}
+  bladeRoll: 0
+  weaponRotOffset: {x: 0, y: 0, z: 0}
+  weaponPosOffset: {x: 0, y: 0, z: 0}
+  socketDeltaScale: 0
+  handLocalScale: {x: 1.0000013, y: 1.0000011, z: 1.0000013}
+  overrideController: {fileID: 0}
+  moveSpeed: 2.8
+  dodgeFront: {fileID: 7400000, guid: 103c599a61701d2438a627ec5c47ad06, type: 3}
+  dodgeBack: {fileID: 7400000, guid: 42badf555525ffe46978c7aa4863b5d5, type: 3}
+  dodgeLeft: {fileID: 7400000, guid: 2591efb33c8fc544f8489279b6269803, type: 3}
+  dodgeRight: {fileID: 7400000, guid: f2708ac5b96d0c442aa3193eef648b78, type: 3}
+  backstep: {fileID: 7400000, guid: 42badf555525ffe46978c7aa4863b5d5, type: 3}
+  dodgeDistance: 6.5
+  backstepDistance: 3.2
+  dodgeDuration: 0.5
+  backstepDuration: 0.32
+  iFrameStart: 0.05
+  iFrameEnd: 0.32
+  dodgeCooldown: 0.12
+  dodgeEntrySpeed: 1.4
+  dodgeExitSpeed: 0.7
+  swingRibbon: 1
+  edgeFx: {fileID: 3292926821986487145, guid: 6550fa572657e844a8514c4882e27207, type: 3}
+  contactFx: {fileID: 2574021210937506055, guid: 10246cccbb8ef6a41b85407f8f2c9288, type: 3}
+  swingSfx: art.slash
+  attacks:
+  - clip: {fileID: 7400000, guid: 0f01aa99506fe204f98d3a01ff53d76a, type: 3}
+    duration: 1.2173914
+    hitStart: 0.46260872
+    hitEnd: 0.7547827
+    damage: 18
+    poiseDamage: 0
+    stepDistance: 1.2
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: 7880debb8c11bb24fb791405e0967658, type: 3}
+    duration: 1.0144929
+    hitStart: 0.3855073
+    hitEnd: 0.6289856
+    damage: 20
+    poiseDamage: 0
+    stepDistance: 1
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: 767b33b2c087a5a4d9f2ae70fe712240, type: 3}
+    duration: 1.5151515
+    hitStart: 0.57575756
+    hitEnd: 0.93939394
+    damage: 22
+    poiseDamage: 0
+    stepDistance: 0.9
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: 9b8482507c77b8a4ca0b9df3fcd1369e, type: 3}
+    duration: 1.6666666
+    hitStart: 0.6333333
+    hitEnd: 1.0333333
+    damage: 24
+    poiseDamage: 0
+    stepDistance: 0.8
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: aa6f7162518b9784293e34060a110247, type: 3}
+    duration: 1.4285716
+    hitStart: 0.54285717
+    hitEnd: 0.8857144
+    damage: 26
+    poiseDamage: 0
+    stepDistance: 0.8
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: 8f933a988ef5cb845b864a1eb461f06e, type: 3}
+    duration: 1.5238097
+    hitStart: 0.5790477
+    hitEnd: 0.944762
+    damage: 30
+    poiseDamage: 0
+    stepDistance: 0.7
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 0
+    staminaCost: 0
+    reaction: 0
+  - clip: {fileID: 7400000, guid: f793f9d6ec799b14390f24f8f45e9694, type: 3}
+    duration: 2.3333335
+    hitStart: 0.8866667
+    hitEnd: 1.4466667
+    damage: 45
+    poiseDamage: 0
+    stepDistance: 1
+    advanceDistance: 0.9
+    endOnLand: 0
+    useRootMotion: 1
+    rootMotionY: 1
+    staminaCost: 0
+    reaction: 0
+  attackRange: 2.6
+  attackArc: 140

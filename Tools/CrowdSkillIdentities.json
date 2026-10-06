@@ -1,0 +1,92 @@
+[
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\GraveRend.asset",
+    "guid": "8e9e1a5d698d73a43a556b8604d99549",
+    "state": "Art10",
+    "icon": "GraveRend"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\IronGale.asset",
+    "guid": "16eec59f53ab9a045b09b698989aabd5",
+    "state": "Art11",
+    "icon": "IronGale"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\Mooncleaver.asset",
+    "guid": "bf91a9caae447244496835fe2e7c292c",
+    "state": "Art12",
+    "icon": "Mooncleaver"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\AshenCleave.asset",
+    "guid": "7f2101b96dcd2b24c9aff974660796d8",
+    "state": "Art13",
+    "icon": "IronGale"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\RedReaver.asset",
+    "guid": "9b8eafde7e8111c409989dd6f07085ba",
+    "state": "Art14",
+    "icon": "GraveRend"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\Stonebreaker.asset",
+    "guid": "e23902ff075690d488c4baf6cc3bcbd2",
+    "state": "Art15",
+    "icon": "GraveRend"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\TideSplitter.asset",
+    "guid": "154d6682887842048b432e1cad498f50",
+    "state": "Art16",
+    "icon": "IronGale"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\GraveWolfI.asset",
+    "guid": "9cde51b1f6b98c04d9e99e36db082613",
+    "state": "Art17",
+    "icon": "Mooncleaver"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\GraveWolfII.asset",
+    "guid": "893bdf58a4aa7ff49b42ee193e7b9266",
+    "state": "Art18",
+    "icon": "Mooncleaver"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\GraveWolf.asset",
+    "guid": "35a68754b010af749acaa8fd2233f9a2",
+    "state": "Art19",
+    "icon": "Mooncleaver"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\MoltenArc.asset",
+    "guid": "55f37102c02f2404ea781abb8a5b9fea",
+    "state": "Art20",
+    "icon": "IronGale"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\SkyfallEdge.asset",
+    "guid": "0ee024b60bd831941a36f3e062942a78",
+    "state": "Art21",
+    "icon": "GraveRend"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\MooncleaverRush.asset",
+    "guid": "e929b14ca86843e4d9aa80afda061e61",
+    "state": "Art22",
+    "icon": "Mooncleaver"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\Bonesunder.asset",
+    "guid": "0fd4e7486b9be2a4e84be542d1934175",
+    "state": "Art23",
+    "icon": "GraveRend"
+  },
+  {
+    "asset": "Assets\\_Project\\Combat\\Arts\\LastEclipse.asset",
+    "guid": "8798eb90daae8424e8392ac7c84c4057",
+    "state": "Art24",
+    "icon": "Mooncleaver"
+  }
+]

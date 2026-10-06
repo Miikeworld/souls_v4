@@ -1,0 +1,75 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 39eb49104c4df6349a155343459311ae, type: 3}
+  m_Name: StarfallSlam
+  m_EditorClassIdentifier: Assembly-CSharp::WeaponArt
+  artName: Starfall Slam
+  shortName: SLAM
+  stateName: Art3
+  icon: Shard
+  manaCost: 28
+  duration: 1.6363636
+  hitWindows:
+  - {x: 0.45, y: 0.68}
+  damagePerHit: 46
+  poiseDamage: 45
+  range: 3
+  arc: 120
+  advance: 1.2
+  useRootMotion: 1
+  rootMotionY: 0
+  cooldown: 4
+  loopState: 
+  loopEndState: 
+  loopEndDuration: 0.45
+  loopMaxTime: 1.6
+  manaPerSecond: 12
+  loopHitInterval: 0.35
+  fxCues:
+  - time: 0.42
+    prefab: {fileID: 8878899700936760066, guid: 933ee65fa62ab0a44b76a54036eb30cf, type: 3}
+    attach: root
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 0
+    scale: 1
+    palette: 3
+    life: 0
+    shake: 0.4
+    hitstop: 0.1
+  - time: 0.44
+    prefab: {fileID: 1793199471691246, guid: 47300f85e6323324bb54c48aa574c9e8, type: 3}
+    attach: handR
+    offset: {x: 0, y: 0, z: 0}
+    euler: {x: 0, y: 0, z: 0}
+    follow: 0
+    scale: 1
+    palette: 0
+    life: 0
+    shake: 0
+    hitstop: 0
+  projectile:
+    prefab: {fileID: 0}
+    spawnTime: 0.45
+    speed: 18
+    radius: 0.35
+    life: 2
+    damage: 20
+    count: 1
+    spreadDeg: 12
+    homing: 0
+    pierce: 0
+  sfxCues:
+  - time: 0.42
+    id: art.slam
+  hitstop: 0.1
+  shake: 0.45
