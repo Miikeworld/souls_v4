@@ -16,9 +16,13 @@ using UnityEngine;
 ///             <see cref="StrikeLine"/> / <see cref="StrikeRadius"/> chip and
 ///             crack the pillars; enough weight topples one, which crashes
 ///             down and crumbles (a missed greatsword is never weightless).
-/// Purple Corestone (<see cref="ChargeWalls"/>) = the suit can use this;
-/// <see cref="SetFlood"/> washes every floor surface crimson. Everything returns
-/// home on <see cref="ResetArena"/> (player death / rest).
+/// Purple Corestone (<see cref="ChargeWalls"/>) = the suit can use this — the
+/// runways light up in the player's wall-run sigils; <see cref="SetFlood"/> lays a
+/// LOW stepped crimson wash on every floor surface (one band per flood beat) and
+/// stamps crimson Core sigils across it while it turns. All FX speak the player's
+/// language (WardenFx: faceted ink-backed rings, stepped fades, shard chips — no
+/// puffs, no sine flicker, tints capped at ×1.6). Everything returns home on
+/// <see cref="ResetArena"/> (player death / rest).
 /// Colliders move only on the piece root; idle bobbing is visual-only, so a
 /// runner on a slab never fights a moving collider.
 /// </summary>
@@ -52,7 +56,7 @@ public sealed class CoreSanctum : MonoBehaviour
     [SerializeField, Min(2f)] private float outerRadius = 15.5f;
     [SerializeField] private Color veinRest = new Color(0.9f, 0.05f, 0.08f, 1f);
     [SerializeField] private Color wallRest = new Color(0.32f, 0.12f, 0.55f, 1f);
-    [SerializeField] private Color wallCharged = new Color(1.5f, 0.7f, 2.6f, 1f);
+    [SerializeField] private Color wallCharged = new Color(0.92f, 0.43f, 1.6f, 1f);
 
     private sealed class Run
     {
@@ -67,6 +71,7 @@ public sealed class CoreSanctum : MonoBehaviour
         public float vy, bob;
         public Vector3 spin;
         public float liftSeed;
+        public bool burst;          // the tear / fall chips already thrown for this motion
         public Collider[] colliders;
         public bool[] collidersOn;
         public readonly List<MeshRenderer> overlays = new List<MeshRenderer>();
@@ -74,6 +79,11 @@ public sealed class CoreSanctum : MonoBehaviour
 
     private const int Home = 0, Tearing = 1, Hanging = 2, Falling = 3, Gone = 4, Landed = 5, Toppling = 6;
     private const float PillarHp = 3f;
+    private const float MaxTint = 1.6f;          // HDR cap: near-flat colour, never a bloom blob
+    private const float FloodWash = 0.22f;       // top band of the floor wash, × WardenFx.Opacity
+    private const int RunwayStamps = 5;
+    // The player's dust chip (TraversalEffects Dust .4/.36/.34 at alpha .55).
+    private static readonly Color GritCol = new Color(0.4f, 0.36f, 0.34f, 0.55f);
     private readonly Dictionary<Transform, int> pieceOf = new Dictionary<Transform, int>();
 
     private Run[] runs;
@@ -81,7 +91,9 @@ public sealed class CoreSanctum : MonoBehaviour
     private readonly List<MeshRenderer> centralOverlays = new List<MeshRenderer>();
     private readonly List<WallRunSurface> runWalls = new List<WallRunSurface>();
     private float instability, charge, chargeTarget, flood, ascend, ascendTarget, heartbeat, nextMote;
-    private bool frozen;
+    private float nextFloodStamp, nextRunStamp, floodAlpha = -1f;
+    private int floodBand, runStampIdx;
+    private bool frozen, floodOn;
 
     public static CoreSanctum Active { get; private set; }
     public Vector3 Center => transform.position;
@@ -127,7 +139,8 @@ public sealed class CoreSanctum : MonoBehaviour
         ApplyVeins();
     }
 
-    /// <summary>A red copy of each floor "Surface" mesh, a hair above it — the flood wash.</summary>
+    /// <summary>A copy of each floor "Surface" mesh, a hair above it — the flood wash
+    /// (a low stepped crimson layer; the sigils and cracks carry the read).</summary>
     private static void AddOverlays(Transform root, List<MeshRenderer> into)
     {
         foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
@@ -157,7 +170,12 @@ public sealed class CoreSanctum : MonoBehaviour
     public void Thump(int n, Vector3 origin)
     {
         heartbeat = 1f;
-        WardenFx.Ring(origin + Vector3.up * 0.06f, Vector3.up, 0.6f, 3f + n * 3f, 0.5f, WardenFx.Crimson, 0.12f, 32, 0.15f);
+        // The Core's beat stamped into the floor: a faceted ring rolling out over ink,
+        // an 8-gon kick under it and a Core sigil at the source.
+        var g = origin + Vector3.up * 0.06f;
+        WardenFx.Ring(g, Vector3.up, 0.6f, 3f + n * 3f, 0.5f, WardenFx.Crimson, 0.12f, WardenFx.RingSides, 0.15f);
+        WardenFx.Pulse(g + Vector3.up * 0.01f, Vector3.up, 0.3f, 1.2f + 0.5f * n, 0.35f, WardenFx.Crimson, 1.1f, WardenFx.CoreSides);
+        WardenFx.Stamp(g, Vector3.up, 0.6f + 0.25f * n, WardenFx.Crimson, 0.9f);
         for (var i = 0; i < pieces.Length; i++)
         {
             var p = pieces[i];
@@ -167,8 +185,8 @@ public sealed class CoreSanctum : MonoBehaviour
             if (n >= 2 && (p.role == Role.Collapse || p.role == Role.Break || p.role == Role.Float))
                 StartCoroutine(Jolt(p.root, 0.05f * n, 0.35f));
         }
-        if (n >= 2) WardenFx.Dust(origin, 4 * n, 2.5f, 1f);
-        if (n >= 3) WardenFx.Cracks(origin, 8, platformRadius * 0.8f, WardenFx.Crimson, 0.3f, 3f);
+        if (n >= 2) Grit(origin, 4 * n, 2.5f, 1.6f);
+        if (n >= 3) WardenFx.Cracks(origin, 8, platformRadius * 0.8f, WardenFx.Crimson, 0.3f, 3f, width: 0.055f);
     }
 
     /// <summary>Phase 3: the floor tears apart. Pieces leave on their own delays.</summary>
@@ -187,6 +205,7 @@ public sealed class CoreSanctum : MonoBehaviour
             r.fromPos = p.root.position;
             r.fromRot = p.root.rotation;
             r.t0 = Time.time + p.delay;
+            r.burst = false;
             r.spin = new Vector3(Random.Range(-40f, 40f), Random.Range(-30f, 30f), Random.Range(-40f, 40f));
             // Floating pillars/debris turn slowly — never a rotating collider under a runner.
             if (p.role == Role.Pillar || p.role == Role.Debris || p.role == Role.Collapse)
@@ -202,8 +221,11 @@ public sealed class CoreSanctum : MonoBehaviour
             r.dur = p.role == Role.WallSlab ? 1.25f : p.role == Role.Break ? 0.45f : 1.0f;
             r.motion = Tearing;
         }
-        WardenFx.Cracks(origin, 10, outerRadius, WardenFx.Crimson, 0.25f, 2.2f);
-        WardenFx.Dust(origin, 18, 5f, 1.6f);
+        // The tear: thin tapered Core cracks run to the rim; each piece throws its own
+        // chips the moment it actually moves (TearFx), so the break ripples outward.
+        WardenFx.Cracks(origin, 10, outerRadius, WardenFx.Crimson, 0.25f, 2.2f, width: 0.06f);
+        Grit(origin, 18, 5f, 2f);
+        WardenFx.Debris(origin + Vector3.up * 0.2f, 12, 5f, 1.4f);
         WardenAudio.Play("boom", origin, 1f, 0.7f);
         WardenAudio.Play("stone", origin, 1f, 0.6f);
     }
@@ -216,19 +238,40 @@ public sealed class CoreSanctum : MonoBehaviour
         if (k > 0.5f && chargeTarget <= 0.5f)
         {
             WardenAudio.Play("whoom", Center + Vector3.up * 2f, 1f, 1f);
-            foreach (var w in runWalls)
-            {
-                if (w == null) continue;
-                var t = w.transform;
-                var face = t.position + t.forward * 0.62f + Vector3.up * 1.6f;
-                WardenFx.Ring(face, t.forward, 0.5f, 3.2f, 0.5f, WardenFx.PurpleBright, 0.12f, 12, 0.2f);
-                WardenFx.Shards(face, 6, 1.5f, WardenFx.Purple, rise: true, size: 1.1f);
-            }
+            if (isActiveAndEnabled)
+                foreach (var w in runWalls)
+                    if (w != null) StartCoroutine(LightRunway(w.transform));
         }
         chargeTarget = k;
     }
 
-    /// <summary>0..1 crimson wash over every floor surface (Crimson Flood / Arena Collapse).</summary>
+    /// <summary>A point on a wall slab's inner run face, between its two purple run marks
+    /// and just proud of them (the dressing lifts the marks 9 cm clear of the kit modules);
+    /// <paramref name="along"/> −1..1 spans the runway.</summary>
+    private static Vector3 RunFace(Transform t, float along)
+        => t.position + t.forward * 0.72f + t.up * 1.25f + t.right * along * 4.6f;
+
+    /// <summary>The runway lights up in the player's own wall-run language: a purple
+    /// 12-gon pulse off the face, then Core sigils stamped end to end along the run line
+    /// (the marks a wall-runner would leave), rising purple chips.</summary>
+    private IEnumerator LightRunway(Transform t)
+    {
+        var face = RunFace(t, 0f);
+        WardenFx.Pulse(face, t.forward, 0.4f, 2.6f, 0.45f, WardenFx.PurpleBright, 1.2f);
+        WardenFx.Shards(face, 6, 1.5f, WardenFx.Purple, rise: true, size: 1.1f);
+        for (var s = 0; s < RunwayStamps; s++)
+        {
+            if (t == null) yield break;
+            var bright = s % 2 == 0;
+            WardenFx.Stamp(RunFace(t, Mathf.Lerp(-1f, 1f, s / (float)(RunwayStamps - 1))), t.forward,
+                           bright ? 0.62f : 0.5f, bright ? WardenFx.PurpleBright : WardenFx.Purple);
+            yield return new WaitForSeconds(0.06f);
+        }
+    }
+
+    /// <summary>0..1 Crimson Flood / Arena Collapse on every floor surface: a low four-band
+    /// wash that clicks up one band per beat (a crimson floor pulse each step); while it
+    /// is still turning (0 &lt; k &lt; 1, the warn) crimson Core sigils pop across the floor.</summary>
     public void SetFlood(float k) => flood = Mathf.Clamp01(k);
 
     /// <summary>Finale lift, 0..1 of each piece's ascend offset.</summary>
@@ -252,6 +295,7 @@ public sealed class CoreSanctum : MonoBehaviour
             if (r.motion == Gone || r.motion == Landed || r.motion == Toppling) continue;
             r.motion = Falling;
             r.vy = 0f;
+            r.burst = false;
             r.t0 = Time.time + Random.Range(0f, 0.35f);
             r.spin = new Vector3(Random.Range(-60f, 60f), Random.Range(-40f, 40f), Random.Range(-60f, 60f));
         }
@@ -265,6 +309,8 @@ public sealed class CoreSanctum : MonoBehaviour
         Shattered = false;
         frozen = false;
         instability = charge = chargeTarget = flood = ascend = ascendTarget = heartbeat = 0f;
+        nextFloodStamp = nextRunStamp = 0f;
+        floodBand = 0;
         for (var i = 0; i < pieces.Length; i++)
         {
             var p = pieces[i];
@@ -278,6 +324,7 @@ public sealed class CoreSanctum : MonoBehaviour
             r.motion = Home;
             r.bob = 0f;
             r.vy = 0f;
+            r.burst = false;
             if (p.role == Role.Pillar) r.hp = PillarHp;
         }
         foreach (var w in runWalls) if (w != null) w.Charge = 0f;
@@ -409,7 +456,7 @@ public sealed class CoreSanctum : MonoBehaviour
         var outward = Vector3.ProjectOnPlane(point - p.root.position, Vector3.up);
         var n = outward.sqrMagnitude > 1e-4f ? outward.normalized : -dir;
         WardenFx.Debris(point, Mathf.RoundToInt(3 + 4 * force), 4.5f, 0.8f + 0.3f * force, n * 0.8f);
-        WardenFx.Dust(point, 2 + Mathf.RoundToInt(2 * force), 0.9f, 0.7f);
+        Grit(point, 2 + Mathf.RoundToInt(2 * force), 0.9f, 1.4f);
         WardenFx.Sparks(point, n, 4, 3.5f);
         // Cracks climbing the face from the hit (vertical-ish, on the pillar surface).
         var crack = new List<Vector3> { point + n * 0.03f };
@@ -421,7 +468,7 @@ public sealed class CoreSanctum : MonoBehaviour
             c = new Vector3(p.root.position.x, c.y, p.root.position.z) + flat * 0.74f;
             crack.Add(c);
         }
-        WardenFx.Line(crack, WardenFx.Crimson, 0.05f, 1.2f, 0.1f, 0.5f);
+        WardenFx.Line(crack, WardenFx.Crimson, 0.045f, 1.2f, 0.1f, 0.5f);
         WardenAudio.Play("stone", point, Mathf.Clamp01(0.4f + 0.3f * force), Random.Range(0.8f, 1.05f));
         if (r.hp <= 0f) StartCoroutine(Topple(i, dir));
         else StartCoroutine(Jolt(p.visual != null ? p.visual : p.root, 0.04f * force, 0.25f));
@@ -441,7 +488,8 @@ public sealed class CoreSanctum : MonoBehaviour
         var axis = Vector3.Cross(Vector3.up, flat);
         var from = p.root.rotation;
         WardenAudio.Play("crack", p.root.position + Vector3.up * 2f, 0.9f, 0.6f);
-        WardenFx.Dust(p.root.position, 6, 1.6f, 1.1f);
+        Grit(p.root.position, 6, 1.6f, 1.8f);
+        WardenFx.Debris(p.root.position + Vector3.up * 0.3f, 4, 2.5f, 1f, flat * 0.6f);
         const float T = 0.9f;
         var t = 0f;
         while (t < T)
@@ -457,10 +505,17 @@ public sealed class CoreSanctum : MonoBehaviour
         {
             var at = basePos + along * d;
             WardenFx.Debris(at, 5, 5f, 1.4f);
-            WardenFx.Dust(at, 3, 1.4f, 1.1f);
+            Grit(at, 3, 1.4f, 2f);
         }
+        // The crash is the room's weight, not a hit zone: no crimson here — a white snap
+        // and a dust-coloured 12-gon rolling out over ink, chips the length of the fall.
         var mid = basePos + along * r.height * 0.6f;
-        WardenFx.Impact(mid, 1.8f, 0.3f, 0f, 10, 1.2f, 0.8f);
+        var floorMid = mid + Vector3.up * 0.05f;
+        WardenFx.Pulse(floorMid, Vector3.up, 0.2f, 1.4f, 0.24f, Color.white, 1.1f);
+        WardenFx.Pulse(floorMid + Vector3.up * 0.01f, Vector3.up, 0.4f, 2.8f, 0.45f, WardenFx.DustCol, 1.4f);
+        WardenFx.Debris(mid + Vector3.up * 0.1f, 14, 5.5f, 1.4f);
+        Grit(mid, 10, 2.5f, 2.2f);
+        WardenFx.Shake(0.3f);
         WardenAudio.Play("boom", mid, 0.8f, 1.1f);
         WardenAudio.Play("stone", mid, 1f, 0.55f);
         heartbeat = Mathf.Max(heartbeat, 0.5f);
@@ -508,6 +563,7 @@ public sealed class CoreSanctum : MonoBehaviour
                         if (p.visual != null) p.visual.localPosition = r.homeLocalVisual + Random.insideUnitSphere * 0.04f;
                         break;
                     }
+                    if (!r.burst) { r.burst = true; TearFx(p); }
                     k = Mathf.Clamp01(k);
                     var e = 1f - (1f - k) * (1f - k) * (1f - k);
                     var arc = Vector3.up * Mathf.Sin(k * Mathf.PI) * (p.role == Role.WallSlab ? 2.5f : 1f);
@@ -518,7 +574,8 @@ public sealed class CoreSanctum : MonoBehaviour
                         if (p.visual != null) p.visual.localPosition = r.homeLocalVisual;
                         if (p.role == Role.WallSlab || p.role == Role.Break)
                         {
-                            WardenFx.Dust(p.root.position, 5, 1.6f, 1.2f);
+                            Grit(p.root.position, 5, 1.6f, 2f);
+                            WardenFx.Debris(p.root.position, 4, 3f, 1f);
                             WardenAudio.Play("stone", p.root.position, 0.5f, Random.Range(0.6f, 0.8f));
                         }
                     }
@@ -538,6 +595,7 @@ public sealed class CoreSanctum : MonoBehaviour
                 case Falling:
                 {
                     if (time < r.t0 || frozen) break;
+                    if (!r.burst) { r.burst = true; TearFx(p); }
                     r.vy -= 22f * dt;
                     var pos = p.root.position + Vector3.up * r.vy * dt;
                     p.root.rotation *= Quaternion.Euler(r.spin * dt);
@@ -547,7 +605,7 @@ public sealed class CoreSanctum : MonoBehaviour
                         // Lands on the platform as rubble.
                         pos.y = Center.y + 0.3f;
                         r.motion = Landed;
-                        WardenFx.Dust(pos, 4, 1.4f, 0.9f);
+                        Grit(pos, 4, 1.4f, 1.8f);
                         WardenFx.Debris(pos, 4, 3f, 0.8f);
                         WardenAudio.Play("stone", pos, 0.45f, Random.Range(0.8f, 1.1f));
                     }
@@ -562,26 +620,88 @@ public sealed class CoreSanctum : MonoBehaviour
             }
         }
 
-        // Phase 2 dust drifting UP — the first sign gravity is failing.
+        // Phase 2 chips drifting UP — the first sign gravity is failing. Shard chips on the
+        // rising system (dust-coloured, more of them crimson as it builds), never puffs.
         if (instability > 0.05f && time >= nextMote)
         {
             nextMote = time + Mathf.Lerp(0.6f, 0.12f, instability);
             var d = Random.insideUnitCircle * outerRadius * 0.9f;
-            WardenFx.Dust(Center + new Vector3(d.x, 0.1f, d.y), 1, 0.15f, 0.45f, WardenFx.DustCol * 1.2f, 1.6f);
+            var at = Center + new Vector3(d.x, 0.1f, d.y);
+            if (Random.value < 0.25f + 0.45f * instability)
+                WardenFx.Shards(at, 3, 0.6f, WardenFx.Crimson, rise: true, size: 0.8f, life: 1.4f);
+            else
+                WardenFx.Dust(at, 2, 0.15f, 1f, WardenFx.DustCol, 1.4f);
+        }
+
+        // Crimson Flood: the wash clicks up one band per beat; while the floor is still
+        // turning, crimson Core sigils pop across it (~6/s, quickening).
+        var band = Mathf.RoundToInt(WardenFx.Stepped(flood) * 4f);
+        if (band > floodBand) FloodBeat();
+        floodBand = band;
+        if (flood > 0.01f && flood < 0.99f && time >= nextFloodStamp)
+        {
+            nextFloodStamp = time + Mathf.Lerp(0.22f, 0.13f, flood / 0.75f);
+            WardenFx.Stamp(RandomFloorPoint() + Vector3.up * 0.05f, Vector3.up, Random.Range(0.4f, 0.75f),
+                           WardenFx.Crimson, Random.Range(0.85f, 1.1f));
+        }
+
+        // Charged runways keep answering in purple: one wall-run sigil per wall per second.
+        if (charge > 0.5f && runWalls.Count > 0 && time >= nextRunStamp)
+        {
+            nextRunStamp = time + 0.95f / runWalls.Count;
+            runStampIdx = (runStampIdx + 1) % runWalls.Count;
+            var w = runWalls[runStampIdx];
+            if (w != null && w.gameObject.activeInHierarchy)
+                WardenFx.Stamp(RunFace(w.transform, Random.Range(-0.9f, 0.9f)), w.transform.forward,
+                               Random.Range(0.4f, 0.52f), WardenFx.Purple, 0.9f);
         }
         ApplyVeins();
         ApplyFlood();
     }
 
+    /// <summary>The player's dust chips (TraversalEffects Dust): flat faceted chips that
+    /// kick up a little, tumble and shrink away. Never a puff.</summary>
+    private static void Grit(Vector3 at, int count, float speed, float size)
+        => WardenFx.Chips(at + Vector3.up * 0.1f, count, speed, Vector3.up * 0.35f, 0.6f, GritCol, size);
+
+    /// <summary>A piece starts to move (tear, collapse, finale fall): chips break off it.</summary>
+    private static void TearFx(Piece p)
+    {
+        var at = p.root.position;
+        if (p.role == Role.Debris) { WardenFx.Debris(at, 2, 2f, 0.8f); return; }
+        WardenFx.Debris(at + Vector3.up * 0.2f, 6, 4f, 1.2f);
+        Grit(at, 4, 2f, 2f);
+    }
+
+    /// <summary>One flood band up: the veins kick and a crimson facet ring rolls across the platform.</summary>
+    private void FloodBeat()
+    {
+        heartbeat = Mathf.Max(heartbeat, 0.55f);
+        var c = WardenHazard.FloorAt(Center + Vector3.up * 3f, 8f, out var floor) ? floor : Center;
+        WardenFx.Pulse(c + Vector3.up * 0.05f, Vector3.up, platformRadius * 0.25f, platformRadius * 0.8f, 0.45f,
+                       WardenFx.Crimson, 1.1f, 24);
+    }
+
+    /// <summary>HDR cap that keeps the hue: no channel above <see cref="MaxTint"/>.</summary>
+    private static Color Cap(Color c)
+    {
+        var m = Mathf.Max(c.r, Mathf.Max(c.g, c.b));
+        if (m > MaxTint) c *= MaxTint / m;
+        c.a = 1f;
+        return c;
+    }
+
     private void ApplyVeins()
     {
         if (mpb == null) return;
-        var beat = heartbeat * heartbeat;
-        var floorCol = veinRest * (0.55f + instability * 0.5f + beat * 1.4f + flood * 0.8f);
-        floorCol.a = 1f;
+        // Every beat clicks down in four bands (the player's stepped fade) — no smooth flicker.
+        var beat = WardenFx.Stepped(heartbeat);
+        beat *= beat;
+        var floorCol = Cap(veinRest * (0.55f + instability * 0.5f + beat * 1.4f + WardenFx.Stepped(flood) * 0.8f));
         foreach (var v in floorVeins) Tint(v, floorCol);
-        var pulse = charge > 0.01f ? 0.85f + 0.15f * Mathf.Sin(Time.time * 9f) : 1f;
-        var wallCol = Color.Lerp(wallRest, wallCharged * pulse, charge);
+        // Charged runways throb on a stepped beat: full on the beat, then three clicks down.
+        var pulse = charge > 0.01f ? 0.8f + 0.2f * WardenFx.Stepped(1f - Mathf.Repeat(Time.time * 1.4f, 1f)) : 1f;
+        var wallCol = Color.Lerp(wallRest, Cap(wallCharged) * pulse, charge);
         wallCol.a = 1f;
         foreach (var p in pieces)
         {
@@ -601,13 +721,16 @@ public sealed class CoreSanctum : MonoBehaviour
 
     private void ApplyFlood()
     {
+        // A LOW four-band layer (≤ FloodWash × the player's opacity), steady between beats:
+        // the stamped sigils, cracks and spikes carry "the floor hurts", not a red fill.
         var on = flood > 0.01f;
-        var a = WardenFx.Stepped(flood) * (0.42f + 0.08f * Mathf.Sin(Time.time * 14f));
-        var c = WardenFx.Crimson;
-        c.a = a;
+        var a = on ? WardenFx.Stepped(flood) * FloodWash * WardenFx.Opacity : 0f;
+        if (on == floodOn && Mathf.Abs(a - floodAlpha) < 1e-4f) return;
+        floodOn = on;
+        floodAlpha = a;
         floodBlock ??= new MaterialPropertyBlock();
         var block = floodBlock;
-        block.SetColor("_Tint", c);
+        block.SetColor("_Tint", WardenFx.Glow(WardenFx.Crimson, a));
         void Set(MeshRenderer r)
         {
             if (r == null) return;

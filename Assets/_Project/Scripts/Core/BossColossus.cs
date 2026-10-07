@@ -240,7 +240,6 @@ public sealed class BossColossus : MonoBehaviour, IRootMotionOwner, IBossEngage
         current = null;
         if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(StaggerId, 0.12f, 0);
         cam?.Shake(0.45f);
-        GameHud.Toast("POSTURE BROKEN");
     }
 
     // ---------- tick ----------
@@ -332,7 +331,6 @@ public sealed class BossColossus : MonoBehaviour, IRootMotionOwner, IBossEngage
         foreach (var m in p2) m.cooldown *= 0.75f;
         var smash = System.Array.Find(p2, m => m.state == "Smash");
         if (smash != null) smash.ringDamage *= 1.15f;
-        GameHud.Toast(displayName.ToUpperInvariant() + " — ENRAGED");
         cam?.Shake(0.5f);
     }
 

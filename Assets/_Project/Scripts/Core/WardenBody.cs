@@ -13,8 +13,12 @@ using UnityEngine;
 ///     the Phase 3 greatsword — the SAME weapon reforged by the Core: grown ×1.55,
 ///     blackened, crimson-veined, loose fragments tethered to it (the procedural
 ///     Corestone slab is only the fallback when no BossSword is rigged) — and its
-///     risen / planted / floating copies. Sword emission belongs to WardenBlade.
-/// Colour stays on-language: crimson = danger, pale only at peaks.
+///     risen / planted / floating copies. Sword emission belongs to WardenBlade;
+///     a BossSword seated off the hand by the old FitSword is repaired in Init.
+/// Drawn in the player's effects language: ink-backed hard-ended strokes, four-band
+/// stepped beats (size pops, never smooth flicker or HDR ramps — tints cap at ×1.6),
+/// faceted 8/12-gon pulses, afterimage-shaded fragments. Crimson = danger, pale only
+/// at peaks.
 /// </summary>
 public sealed class WardenBody : MonoBehaviour
 {
@@ -27,6 +31,7 @@ public sealed class WardenBody : MonoBehaviour
     private MeshRenderer seams;
     private readonly List<Transform> shards = new List<Transform>();
     private readonly List<LineRenderer> tethers = new List<LineRenderer>();
+    private readonly List<LineRenderer> tetherInk = new List<LineRenderer>();
     private readonly List<Vector3> shardHome = new List<Vector3>();
     private static Mesh slabMesh, seamMesh;
 
@@ -41,17 +46,20 @@ public sealed class WardenBody : MonoBehaviour
     private readonly List<Renderer> bodyEmit = new List<Renderer>();
     private readonly List<float> bodyBase = new List<float>();
     private Transform swordP2, greatsword;
-    private LineRenderer coreLine;
+    private LineRenderer coreLine, coreLineInk;
     private const float GreatScale = 1.55f;
     private Transform floatCopy, plantedCopy, risingCopy;
     private Transform floatAnchor;
     private readonly List<Transform> orbit = new List<Transform>();
+    private readonly List<MeshRenderer> orbitR = new List<MeshRenderer>();
     private readonly List<Vector3> orbitSeed = new List<Vector3>();
     private float orbitK;
     private Transform[] segs;
-    private LineRenderer climb;
+    private LineRenderer climb, climbInk;
     private int lit;
     private Vector3 baseL, tipL;
+    private SkinnedMeshRenderer bodySkin;
+    private float nextBeatRing;
     private static Mesh coreMesh;
 
     public Vector3 CorePosition => core != null ? core.position : transform.position + Vector3.up * 1.6f;
@@ -72,11 +80,18 @@ public sealed class WardenBody : MonoBehaviour
         var hand = anim != null && anim.isHuman ? anim.GetBoneTransform(HumanBodyBones.RightHand) : null;
         if (hand != null)
         {
-            swordP2 = FindDeep(hand, "BossSword") ?? FindDeep(anim.transform, "LordWeapon");
+            swordP2 = FindDeep(hand, "BossSword");
+            // Repair the grip before BuildGreatsword copies it and WardenBlade/WardenPose measure it.
+            if (swordP2 != null) ReseatSword(anim, swordP2);
+            else swordP2 = FindDeep(anim.transform, "LordWeapon");
             greatsword = BuildGreatsword(swordP2 != null ? swordP2.parent : hand, swordP2);
             BladeAxis(greatsword, out baseL, out tipL);
         }
-        if (anim != null) baseScale = anim.transform.localScale;
+        if (anim != null)
+        {
+            baseScale = anim.transform.localScale;
+            bodySkin = BodySkin(anim);
+        }
         if (anim != null)
             foreach (var r in anim.GetComponentsInChildren<Renderer>(true))
             {
@@ -89,6 +104,70 @@ public sealed class WardenBody : MonoBehaviour
                 bodyBase.Add(m.GetFloat(EmissionId));
             }
         BuildCore();
+    }
+
+    /// <summary>Repairs a hand sword seated by the old BossRigRepair.FitSword, which baked
+    /// the skin with BakeMesh(useScale: false) — world-size vertices around the renderer's
+    /// pivot — then applied the renderer's ×100 scale again, parking the grip ~90× too far
+    /// from the body's origin (~170 m off the hand). Inverts that exactly: the true fist
+    /// lies on the line from the body renderer's pivot through the misplaced grip, at 1/s
+    /// of its distance (s = the renderer's scale when it was fitted — the scene's, or the
+    /// prefab's if the instance was scaled since). The inversion is only exact while the
+    /// bones are in the rest pose the seat was fitted in: true in Awake (the Animator has
+    /// not evaluated yet) and in edit mode. A result that doesn't land in the fist falls
+    /// back to just past the wrist along the forearm. Keeps the sword's rotation and scale
+    /// (both were fitted correctly). True if it moved the sword.</summary>
+    public static bool ReseatSword(Animator anim, Transform sword)
+    {
+        if (anim == null || sword == null || !anim.isHuman) return false;
+        var hand = anim.GetBoneTransform(HumanBodyBones.RightHand);
+        if (hand == null || sword == hand || !sword.IsChildOf(hand)) return false;
+        var scale = Mathf.Max(0.01f, anim.transform.lossyScale.x);
+        var tolerance = 0.35f * scale;
+        var before = Vector3.Distance(sword.position, hand.position);
+        if (before <= tolerance) return false;
+        var seat = Vector3.zero;
+        var best = float.MaxValue;
+        // FitSword used the first skinned renderer; the body is the largest — try both.
+        var first = anim.GetComponentInChildren<SkinnedMeshRenderer>();
+        foreach (var smr in new[] { first, BodySkin(anim) })
+        {
+            if (smr == null) continue;
+            var o = smr.transform.position;
+            var s = Mathf.Max(1e-4f, smr.transform.lossyScale.x);
+            foreach (var f in new[] { s, s / scale })
+            {
+                var c = o + (sword.position - o) / f;
+                var d = Vector3.Distance(c, hand.position);
+                if (d < best) { best = d; seat = c; }
+            }
+        }
+        var inverted = best <= tolerance;
+        if (!inverted)
+        {
+            var fore = anim.GetBoneTransform(HumanBodyBones.RightLowerArm);
+            var dir = fore != null ? hand.position - fore.position : hand.up;
+            if (dir.sqrMagnitude < 1e-8f) dir = hand.up;
+            seat = hand.position + dir.normalized * 0.06f * scale;
+        }
+        sword.position = seat;
+        Debug.LogWarning($"[Warden] {sword.name} was seated {before:F1} m from {hand.name}; reseated {Vector3.Distance(seat, hand.position):F3} m from it " +
+                         (inverted ? "(inverted the FitSword double scale)." : "(forearm fallback).") +
+                         " Fix FitSword and re-run Boss Polish 6 to repair the asset itself.");
+        return true;
+    }
+
+    /// <summary>The visible body: the skinned renderer under <paramref name="anim"/> with the most vertices.</summary>
+    private static SkinnedMeshRenderer BodySkin(Animator anim)
+    {
+        SkinnedMeshRenderer best = null;
+        var most = 0;
+        foreach (var r in anim.GetComponentsInChildren<SkinnedMeshRenderer>())
+        {
+            var n = r.sharedMesh != null ? r.sharedMesh.vertexCount : 0;
+            if (n > most) { most = n; best = r; }
+        }
+        return best;
     }
 
     private void BuildCore()
@@ -164,18 +243,60 @@ public sealed class WardenBody : MonoBehaviour
             shard.AddComponent<MeshRenderer>().sharedMaterial = mat;
             shards.Add(shard.transform);
             shardHome.Add(home);
-            var lr = new GameObject("Tether").AddComponent<LineRenderer>();
-            lr.transform.SetParent(t, false);
-            lr.sharedMaterial = WardenFx.GlowMaterial;
-            lr.useWorldSpace = true;
-            lr.positionCount = 2;
-            lr.numCapVertices = 0;
-            lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            tethers.Add(lr);
+            tetherInk.Add(MakeLine(t, "Tether ink", 0));
+            tethers.Add(MakeLine(t, "Tether", 1));
         }
         go.SetActive(false);
         return t;
     }
+
+    /// <summary>A two-point world-space stroke the player's way: hard ends (no cap or
+    /// corner vertices), ink (order 0) always under its coloured stroke (order 1).</summary>
+    private static LineRenderer MakeLine(Transform parent, string name, int order)
+    {
+        var lr = new GameObject(name).AddComponent<LineRenderer>();
+        lr.transform.SetParent(parent, false);
+        lr.sharedMaterial = WardenFx.GlowMaterial;
+        lr.useWorldSpace = true;
+        lr.positionCount = 2;
+        lr.numCornerVertices = 0;
+        lr.numCapVertices = 0;
+        lr.sortingOrder = order;
+        lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        lr.receiveShadows = false;
+        return lr;
+    }
+
+    /// <summary>Draws <paramref name="line"/> a→b over its ink underlay (the player's forge
+    /// stroke: ink 2.4× / 1.5× wide at alpha × InkStrength), near-flat colour, alpha
+    /// stepped in four bands × Opacity.</summary>
+    private static void Stroke(LineRenderer line, LineRenderer ink, Vector3 a, Vector3 b, float w0, float w1, Color col, float alpha)
+    {
+        if (line == null) return;
+        var st = WardenFx.Stepped(alpha) * WardenFx.Opacity;
+        var on = st > 0.001f;
+        line.enabled = on;
+        if (ink != null) ink.enabled = on;
+        if (!on) return;
+        line.SetPosition(0, a);
+        line.SetPosition(1, b);
+        line.startWidth = w0;
+        line.endWidth = w1;
+        line.startColor = line.endColor = WardenFx.Glow(col, st);
+        if (ink == null) return;
+        ink.SetPosition(0, a);
+        ink.SetPosition(1, b);
+        ink.startWidth = w0 * 2.4f;
+        ink.endWidth = Mathf.Max(w1, w0 * 0.6f) * 1.5f;
+        var k = WardenFx.Ink;
+        k.a = st * WardenFx.InkStrength;
+        ink.startColor = ink.endColor = k;
+    }
+
+    /// <summary>A stepped beat (never a smooth flicker): 1 for the first 35% of each
+    /// cycle, <paramref name="low"/> for the rest.</summary>
+    private static float Throb(float hz, float phase, float low = 0.75f)
+        => Mathf.Repeat(Time.time * hz + phase, 1f) < 0.35f ? 1f : low;
 
     /// <summary>His own sword, reforged by the Core: a copy of the BossSword on the same
     /// grip, ×<see cref="GreatScale"/>, blackened with its emission mask burning crimson,
@@ -209,14 +330,8 @@ public sealed class WardenBody : MonoBehaviour
         var b = src.bounds;
         var tipY = Mathf.Abs(b.max.y) >= Mathf.Abs(b.min.y) ? b.max.y : b.min.y;
         var half = b.extents.x;
-        var lgo = new GameObject("Core vein");
-        lgo.transform.SetParent(t, false);
-        coreLine = lgo.AddComponent<LineRenderer>();
-        coreLine.sharedMaterial = WardenFx.GlowMaterial;
-        coreLine.useWorldSpace = true;
-        coreLine.positionCount = 2;
-        coreLine.numCapVertices = 0;
-        coreLine.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        coreLineInk = MakeLine(t, "Core vein ink", 0);
+        coreLine = MakeLine(t, "Core vein", 1);
         veinA = Vector3.up * tipY * 0.12f;
         veinB = Vector3.up * tipY * 0.94f;
 
@@ -234,14 +349,8 @@ public sealed class WardenBody : MonoBehaviour
             shard.AddComponent<MeshRenderer>().sharedMaterial = mat;
             shards.Add(shard.transform);
             shardHome.Add(home);
-            var lr = new GameObject("Tether").AddComponent<LineRenderer>();
-            lr.transform.SetParent(t, false);
-            lr.sharedMaterial = WardenFx.GlowMaterial;
-            lr.useWorldSpace = true;
-            lr.positionCount = 2;
-            lr.numCapVertices = 0;
-            lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            tethers.Add(lr);
+            tetherInk.Add(MakeLine(t, "Tether ink", 0));
+            tethers.Add(MakeLine(t, "Tether", 1));
         }
         edgeHalf = half;
         go.SetActive(false);
@@ -449,22 +558,19 @@ public sealed class WardenBody : MonoBehaviour
     private void TickGreatsword()
     {
         if (greatsword == null || !greatsword.gameObject.activeInHierarchy) return;
-        var hum = 1.1f + charge * 1.4f + beat * 1.2f + 0.25f * Mathf.Sin(Time.time * 7f);
+        // Beats are size pops and stepped bands, never brightness ramps or smooth flicker.
+        var swell = WardenFx.Stepped(Mathf.Max(charge, beat * 0.8f));
+        var pop = WardenFx.Stepped(Mathf.Clamp01(beat));
         if (coreLine != null)
         {
             var va = greatsword.TransformPoint(veinA);
             var vb = greatsword.TransformPoint(veinB);
-            coreLine.SetPosition(0, va);
-            coreLine.SetPosition(1, vb);
-            var vw = (0.016f + 0.01f * charge + 0.012f * beat) * Vector3.Distance(va, vb);
-            coreLine.startWidth = vw;
-            coreLine.endWidth = vw * 0.35f;
-            var vc = Color.Lerp(WardenFx.Crimson, WardenFx.PaleRed, 0.12f * hum - 0.1f);
-            vc.a = 0.85f;
-            coreLine.startColor = coreLine.endColor = vc;
+            var vw = (0.016f + 0.008f * swell + 0.012f * pop) * Vector3.Distance(va, vb);
+            Stroke(coreLine, coreLineInk, va, vb, vw, vw * 0.35f, WardenFx.Crimson, Mathf.Max(0.75f, swell) * Throb(1.6f, 0f, 0.85f));
         }
         if (seams != null)
         {
+            var hum = Mathf.Min(1.3f, 1f + 0.3f * swell);
             mpb.Clear();
             mpb.SetColor(TintId, new Color(hum, hum, hum, 1f));
             seams.SetPropertyBlock(mpb);
@@ -478,14 +584,9 @@ public sealed class WardenBody : MonoBehaviour
             var edgeX = home.x > 0f ? edgeHalf : -edgeHalf;
             var a = greatsword.TransformPoint(new Vector3(edgeX, home.y, 0f));
             var b2 = shards[i].position;
-            var lr = tethers[i];
-            lr.SetPosition(0, a);
-            lr.SetPosition(1, b2);
-            var w = 0.018f + 0.01f * Mathf.Abs(Mathf.Sin(Time.time * 23f + i * 3f));
-            lr.startWidth = lr.endWidth = w;
-            var c = WardenFx.Crimson;
-            c.a = 0.6f + 0.4f * Mathf.Abs(Mathf.Sin(Time.time * 11f + i));
-            lr.startColor = lr.endColor = c;
+            var on = Throb(2.4f, i * 0.31f, 0.75f);
+            var w = (on > 0.9f ? 0.024f : 0.018f) * (1f + 0.35f * pop);
+            Stroke(tethers[i], tetherInk[i], a, b2, w, w * 0.6f, WardenFx.Crimson, Mathf.Max(on, swell));
         }
     }
 
@@ -508,16 +609,29 @@ public sealed class WardenBody : MonoBehaviour
     /// <summary>0..1 sustained swell — the Core gathering for a big swing.</summary>
     public void Charge(float k) => charge = Mathf.Clamp01(k);
 
-    /// <summary>One heartbeat flash.</summary>
-    public void Beat(float k = 1f) => beat = Mathf.Max(beat, k);
+    /// <summary>One heartbeat: the Core pops in size and a faceted 8-gon snaps off it
+    /// (the beat is a shape, not a brightness ramp).</summary>
+    public void Beat(float k = 1f)
+    {
+        beat = Mathf.Max(beat, k);
+        if (core == null || coreScale < 0.05f || Time.time < nextBeatRing) return;
+        nextBeatRing = Time.time + 0.12f;
+        var s = Mathf.Max(0.5f, transform.lossyScale.x) * coreScale;
+        k = Mathf.Clamp(k, 0.3f, 1.6f);
+        WardenFx.Pulse(core.position, transform.forward, 0.1f * s, 0.45f * s * k, 0.24f, WardenFx.Crimson, 0.8f, WardenFx.CoreSides);
+    }
 
     /// <summary>The chest armour splits and the Core shows (the Phase 3 reveal).</summary>
     public void SplitChest()
     {
-        var p = ChestPosition + transform.forward * 0.2f;
-        WardenFx.Shards(p, 14, 3.2f, WardenFx.StoneCol, false, 1.4f, 0.8f, transform.forward * 0.8f);
+        var fwd = transform.forward;
+        var p = ChestPosition + fwd * 0.2f;
+        WardenFx.Peak(p, 0.45f);
+        WardenFx.Star(p, WardenFx.Crimson, Vector3.up, 1.8f, 1.3f);
+        WardenFx.Pulse(p, fwd, 0.12f, 0.9f, 0.3f, WardenFx.Crimson, 1f, WardenFx.CoreSides);
+        WardenFx.Shards(p, 10, 3.2f, WardenFx.StoneCol, false, 1f, 0.6f, fwd * 0.8f);
         WardenFx.Shards(p, 10, 2f, WardenFx.Crimson, true, 1f, 1.2f);
-        WardenFx.Peak(p, 0.6f);
+        if (bodySkin != null) WardenFx.Ghost(bodySkin, WardenFx.Crimson, 0.5f);
         WardenAudio.Play("shatter", p, 0.7f, 0.7f);
         SetCore(CoreMode.Exposed);
         Beat(1.5f);
@@ -527,19 +641,27 @@ public sealed class WardenBody : MonoBehaviour
     public void ShedArmour(int count)
     {
         var p = ChestPosition;
-        WardenFx.Shards(p, count, 2.5f, WardenFx.StoneCol, true, 1.6f, 1.4f, Vector3.up, 0.5f);
+        WardenFx.Shards(p, count, 2.5f, WardenFx.StoneCol, true, 1.1f, 1.2f, Vector3.up, 0.5f);
         WardenFx.Shards(p, count / 2, 2f, WardenFx.Crimson, true, 1f, 1.1f, Vector3.up, 0.4f);
+        WardenFx.Pulse(p, Vector3.up, 0.3f, 1.1f, 0.3f, WardenFx.Crimson, 1f, WardenFx.CoreSides);
     }
 
-    /// <summary>The finisher: the Core bursts.</summary>
+    /// <summary>The finisher: the Core bursts — the player's impact star at arena scale,
+    /// faceted 12-/8-gon shock rings, a Core sigil stamped under him and a crimson
+    /// afterimage of his body left standing as he breaks.</summary>
     public void ShatterCore()
     {
         var p = CorePosition;
-        WardenFx.Peak(p, 2.2f);
-        WardenFx.Shards(p, 40, 9f, WardenFx.Crimson, false, 1.8f, 1.1f, null, 0.3f);
-        WardenFx.Shards(p, 24, 3f, WardenFx.PaleRed, true, 1.2f, 1.6f, null, 0.3f);
-        WardenFx.Ring(p, Vector3.up, 0.5f, 7f, 0.6f, WardenFx.Crimson, 0.2f, 32, 0.15f, unscaled: true);
-        WardenFx.Spikes(p, 14, 3.2f, WardenFx.Crimson, 0.35f, 0.14f);
+        var s = Mathf.Max(0.5f, transform.lossyScale.x);
+        var floor = CoreSanctum.Active != null ? CoreSanctum.Active.Center.y : transform.position.y;
+        WardenFx.Peak(p, 0.9f * s);
+        WardenFx.Star(p, WardenFx.Crimson, Vector3.up, 2.5f, 2.6f * s);
+        WardenFx.Pulse(p, Vector3.up, 0.5f * s, 6.5f * s, 0.6f, WardenFx.Crimson, 1.6f, WardenFx.RingSides, true);
+        WardenFx.Pulse(p, Vector3.up, 0.3f * s, 3.4f * s, 0.42f, WardenFx.Crimson, 1.2f, WardenFx.CoreSides, true);
+        WardenFx.Stamp(new Vector3(p.x, floor + 0.03f, p.z), Vector3.up, 2.4f * s, WardenFx.Crimson, 1.6f);
+        WardenFx.Shards(p, 24, 7f, WardenFx.Crimson, false, 1.2f, 0.9f, null, 0.3f);
+        WardenFx.Shards(p, 16, 3f, WardenFx.Crimson, true, 1f, 1.4f, null, 0.3f);
+        if (bodySkin != null) WardenFx.Ghost(bodySkin, WardenFx.Crimson, 0.9f);
         WardenAudio.Play("shatter", p, 1f, 0.6f);
         WardenAudio.Play("boom", p, 1f, 0.75f);
         SetCore(CoreMode.Hidden);
@@ -554,27 +676,38 @@ public sealed class WardenBody : MonoBehaviour
     private void TickOrbit(float dt)
     {
         var want = Mathf.RoundToInt(orbitK * 9f);
+        // Drawn like the player's afterimages (ink silhouette, rim band, faint fill, the
+        // spike's own facet wire); the glow-material crystal is only the shaderless fallback.
+        var ghost = WardenFx.AfterimageMaterial != WardenFx.GlowMaterial;
+        var unit = 1f / Mathf.Max(0.01f, transform.lossyScale.x);
+        var born = orbit.Count;
         while (orbit.Count < want)
         {
             var go = new GameObject("Core fragment");
             go.transform.SetParent(transform, false);
-            go.AddComponent<MeshFilter>().sharedMesh = WardenFx.SpikeMesh;
+            go.AddComponent<MeshFilter>().sharedMesh = ghost ? WardenFx.SpikeMesh : CoreMesh;
             var r = go.AddComponent<MeshRenderer>();
-            r.sharedMaterial = WardenFx.GlowMaterial;
+            r.sharedMaterial = ghost ? WardenFx.AfterimageMaterial : WardenFx.GlowMaterial;
             r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            go.transform.localScale = new Vector3(0.05f, 0.16f, 0.05f) / Mathf.Max(0.01f, transform.lossyScale.x);
+            r.receiveShadows = false;
             orbit.Add(go.transform);
+            orbitR.Add(r);
             orbitSeed.Add(new Vector3(Random.value * 360f, Random.Range(0.9f, 1.5f), Random.Range(50f, 120f) * (Random.value < 0.5f ? -1f : 1f)));
-            WardenFx.Converge(go.transform.position, 4, 0.4f, 0.2f, WardenFx.Crimson, 0.6f);
         }
         while (orbit.Count > want)
         {
             var last = orbit.Count - 1;
-            if (orbit[last] != null) Destroy(orbit[last].gameObject);
+            if (orbit[last] != null)
+            {
+                if (dt > 0f) WardenFx.Chips(orbit[last].position, 3, 1.4f, Vector3.up * 0.3f, 0.35f, WardenFx.Crimson, 0.7f);
+                Destroy(orbit[last].gameObject);
+            }
             orbit.RemoveAt(last);
+            orbitR.RemoveAt(last);
             orbitSeed.RemoveAt(last);
         }
         var centre = ChestPosition;
+        var size = new Vector3(0.07f, 0.22f, 0.07f) * (unit * (ghost ? 1f : 2.5f) * (1f + 0.3f * WardenFx.Stepped(Mathf.Clamp01(beat))));
         for (var i = 0; i < orbit.Count; i++)
         {
             var s = orbitSeed[i];
@@ -582,6 +715,12 @@ public sealed class WardenBody : MonoBehaviour
             var y = Mathf.Sin(Time.time * 1.3f + i) * 0.45f;
             orbit[i].position = centre + new Vector3(Mathf.Cos(ang) * s.y, y, Mathf.Sin(ang) * s.y);
             orbit[i].rotation = Quaternion.Euler(Time.time * 90f + i * 40f, Time.time * 140f, 0f);
+            orbit[i].localScale = size;
+            if (i >= born) WardenFx.Converge(orbit[i].position, 4, 0.4f, 0.2f, WardenFx.Crimson, 0.6f);
+            mpb.Clear();
+            if (ghost) WardenFx.PaintAfterimage(mpb, WardenFx.Crimson, 1f);
+            else mpb.SetColor(TintId, WardenFx.Glow(WardenFx.Crimson, WardenFx.Opacity));
+            orbitR[i].SetPropertyBlock(mpb);
         }
     }
 
@@ -602,9 +741,12 @@ public sealed class WardenBody : MonoBehaviour
         for (var i = 0; i < 6; i++)
         {
             var p = swordP2.TransformPoint(Vector3.Lerp(b, t, (i + 0.5f) / 6f));
-            WardenFx.Shards(p, 5, 0.8f, WardenFx.Crimson, true, 1.3f, 2.2f);
-            WardenFx.Shards(p, 2, 1.5f, WardenFx.StoneCol, false, 1.1f, 0.8f);
+            WardenFx.Shards(p, 5, 0.8f, WardenFx.Crimson, true, 1.1f, 2.2f);
+            WardenFx.Chips(p, 2, 1.5f, Vector3.zero, 0.5f, WardenFx.Ink, 0.9f);
         }
+        // The snap: an impact star at the break and the blade's afterimage left hanging.
+        WardenFx.Star(swordP2.TransformPoint(Vector3.Lerp(b, t, 0.45f)), WardenFx.Crimson, Vector3.up, 1.6f, 1.2f);
+        if (swordP2.gameObject.activeInHierarchy) WardenFx.Ghost(swordP2.GetComponentInChildren<MeshFilter>(), WardenFx.Crimson, 0.5f);
         WardenAudio.Play("shatter", swordP2.position, 0.9f, 0.85f);
         swordP2.gameObject.SetActive(false);
     }
@@ -619,14 +761,15 @@ public sealed class WardenBody : MonoBehaviour
         risingCopy.rotation = Quaternion.FromToRotation(greatsword.rotation * (tipL - baseL).normalized, Vector3.down) * risingCopy.rotation;
         StartCoroutine(RiseRoutine(risingCopy, ground, len, seconds));
         WardenFx.Cracks(ground, 7, 3.2f, WardenFx.Crimson, 0.3f, 2.2f);
-        WardenFx.Debris(ground, 10, 5f, 1.3f);
-        WardenFx.Dust(ground, 8, 1.8f, 1.2f);
+        WardenFx.Stamp(ground + Vector3.up * 0.03f, Vector3.up, 1.3f, WardenFx.Crimson, 1.4f);
+        WardenFx.Debris(ground, 8, 4.5f, 1f);
         WardenAudio.Play("stone", ground, 1f, 0.55f);
     }
 
     private System.Collections.IEnumerator RiseRoutine(Transform copy, Vector3 ground, float len, float seconds)
     {
         var t = 0f;
+        var nextChip = 0f;
         // Grip pivot: hilt at ground-0.2 (buried) → hilt ~1.1m up, blade still sunk in stone.
         var from = ground + Vector3.down * (0.2f + len * 0.05f);
         var to = ground + Vector3.up * 1.1f;
@@ -635,7 +778,12 @@ public sealed class WardenBody : MonoBehaviour
             t += Time.deltaTime;
             var k = Mathf.Clamp01(t / seconds);
             copy.position = Vector3.Lerp(from, to, 1f - (1f - k) * (1f - k)) + Random.insideUnitSphere * 0.03f * (1f - k);
-            if (Random.value < 0.25f) WardenFx.Debris(ground, 1, 3f, 0.8f);
+            if (t >= nextChip)
+            {
+                // Stone grinding open on a beat, not a per-frame spray.
+                nextChip = t + 0.14f;
+                WardenFx.Chips(ground + Vector3.up * 0.05f, 2, 2.6f, Vector3.up * 0.5f, 0.4f, WardenFx.CrimsonDeep, 0.9f);
+            }
             yield return null;
         }
     }
@@ -645,7 +793,9 @@ public sealed class WardenBody : MonoBehaviour
     {
         if (risingCopy != null)
         {
-            WardenFx.Dust(risingCopy.position + Vector3.down, 6, 1.6f, 1f);
+            var p = risingCopy.position;
+            WardenFx.Pulse(p, Vector3.up, 0.15f, 1.1f, 0.26f, WardenFx.Crimson, 1f, WardenFx.CoreSides);
+            WardenFx.Chips(p + Vector3.down, 5, 2.2f, Vector3.up * 0.4f, 0.4f, WardenFx.StoneCol, 1f);
             Destroy(risingCopy.gameObject);
             risingCopy = null;
         }
@@ -670,7 +820,7 @@ public sealed class WardenBody : MonoBehaviour
     {
         if (plantedCopy != null)
         {
-            WardenFx.Dust(plantedCopy.position + Vector3.down, 4, 1.2f, 0.9f);
+            WardenFx.Chips(plantedCopy.position + Vector3.down, 4, 2f, Vector3.up * 0.4f, 0.4f, WardenFx.StoneCol, 1f);
             Destroy(plantedCopy.gameObject);
             plantedCopy = null;
         }
@@ -707,7 +857,9 @@ public sealed class WardenBody : MonoBehaviour
         copy.name = name;
         copy.localScale = src.lossyScale;
         foreach (Transform child in copy)
-            if (child.name.StartsWith("Seg") || child.name == "Climb" || child.name == "Tether") Destroy(child.gameObject);
+            if (child.name.StartsWith("Seg")) Destroy(child.gameObject);
+        // World-space strokes (tethers, vein, climb and their ink) would freeze where the hand blade was.
+        foreach (var lr in copy.GetComponentsInChildren<LineRenderer>(true)) Destroy(lr.gameObject);
         copy.gameObject.SetActive(true);
         WardenHazard.Track(copy.gameObject);
         return copy;
@@ -724,13 +876,16 @@ public sealed class WardenBody : MonoBehaviour
         if (segments > lit)
         {
             var p = greatsword.TransformPoint(Vector3.Lerp(baseL, tipL, SegmentAt[segments - 1]));
+            var axis = greatsword.TransformDirection(tipL - baseL).normalized;
             WardenFx.Peak(p, 0.25f + 0.08f * segments);
+            // A faceted collar snapping round the blade at the stud that lit.
+            WardenFx.Pulse(p, axis, 0.08f, 0.3f + 0.06f * segments, 0.22f, WardenFx.Crimson, 0.8f, WardenFx.CoreSides);
             WardenFx.Shards(p, 4, 1.2f, WardenFx.Crimson, true, 0.9f, 0.5f);
             WardenAudio.Play("chime", p, 0.35f, 0.55f + segments * 0.09f);
         }
         lit = segments;
         for (var i = 0; i < segs.Length; i++) segs[i].gameObject.SetActive(i < lit);
-        climb.enabled = lit > 0;
+        climb.enabled = climbInk.enabled = lit > 0;
     }
 
     public void ClearCountdown()
@@ -739,6 +894,7 @@ public sealed class WardenBody : MonoBehaviour
         if (segs == null) return;
         foreach (var s in segs) if (s != null) s.gameObject.SetActive(false);
         if (climb != null) climb.enabled = false;
+        if (climbInk != null) climbInk.enabled = false;
     }
 
     private void BuildSegments()
@@ -758,15 +914,9 @@ public sealed class WardenBody : MonoBehaviour
             go.SetActive(false);
             segs[i] = go.transform;
         }
-        var lgo = new GameObject("Climb");
-        lgo.transform.SetParent(greatsword, false);
-        climb = lgo.AddComponent<LineRenderer>();
-        climb.sharedMaterial = WardenFx.GlowMaterial;
-        climb.useWorldSpace = true;
-        climb.positionCount = 2;
-        climb.numCapVertices = 0;
-        climb.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-        climb.enabled = false;
+        climbInk = MakeLine(greatsword, "Climb ink", 0);
+        climb = MakeLine(greatsword, "Climb", 1);
+        climb.enabled = climbInk.enabled = false;
     }
 
     // ------------------------------------------------------------------ tick
@@ -776,24 +926,27 @@ public sealed class WardenBody : MonoBehaviour
         var dt = Time.deltaTime;
         beat = Mathf.MoveTowards(beat, 0f, dt * 2.6f);
         coreScale = Mathf.MoveTowards(coreScale, scaleTarget, dt * 2.5f);
-        var pulse = 1f + beat * 0.35f + charge * 0.2f;
+        // Beats are size pops in four steps; charge swells shape and only a little colour.
+        var swell = WardenFx.Stepped(charge);
+        var pulse = 1f + 0.35f * WardenFx.Stepped(Mathf.Clamp01(beat)) + 0.2f * swell;
 
         if (core != null)
         {
             core.localScale = Vector3.one * coreScale * pulse / Mathf.Max(0.01f, chest != null ? chest.lossyScale.x : 1f);
             coreR.enabled = coreScale > 0.01f;
-            var bright = 1f + charge * 1.6f + beat * 1.4f + (mode == CoreMode.Open ? 1.2f : 0f);
-            var c = Color.Lerp(WardenFx.Crimson, Color.white, charge * 0.25f + beat * 0.2f) * bright;
+            // Near-flat colour (×1.28, the player's glow), capped at ×1.6 — no bloom blob.
+            var bright = Mathf.Min(1.6f, 1.28f + 0.2f * swell + (mode == CoreMode.Open ? 0.12f : 0f));
+            var c = Color.Lerp(WardenFx.Crimson, Color.white, 0.15f + 0.1f * swell) * bright;
             c.a = 1f;
             mpb.Clear();
             mpb.SetColor(TintId, c);
             coreR.SetPropertyBlock(mpb);
-            var baseLight = mode switch { CoreMode.Glimmer => 0.6f, CoreMode.Exposed => 1.6f, CoreMode.Open => 4f, _ => 0f };
-            coreLight.intensity = baseLight * (1f + beat * 1.5f) + charge * 3f;
-            coreLight.range = mode == CoreMode.Open ? 9f : 5f;
+            var baseLight = mode switch { CoreMode.Glimmer => 0.4f, CoreMode.Exposed => 1f, CoreMode.Open => 1.5f, _ => 0f };
+            coreLight.intensity = Mathf.Min(2f, baseLight * (1f + 0.3f * WardenFx.Stepped(Mathf.Clamp01(beat))) + 0.5f * swell);
+            coreLight.range = mode == CoreMode.Open ? 7f : 5f;
         }
 
-        var emitK = 1f + charge * 1.5f + beat * 0.9f + (mode >= CoreMode.Exposed ? 0.35f : 0f);
+        var emitK = 1f + 0.45f * WardenFx.Stepped(Mathf.Max(charge, Mathf.Clamp01(beat) * 0.6f)) + (mode >= CoreMode.Exposed ? 0.15f : 0f);
         for (var i = 0; i < bodyEmit.Count; i++)
         {
             var r = bodyEmit[i];
@@ -812,23 +965,23 @@ public sealed class WardenBody : MonoBehaviour
             floatCopy.rotation = Quaternion.AngleAxis(40f * dt, Vector3.up) * floatCopy.rotation;
         }
 
-        if (climb != null && climb.enabled && greatsword != null)
+        if (climb != null && lit > 0 && greatsword != null && greatsword.gameObject.activeInHierarchy)
         {
             var a = greatsword.TransformPoint(baseL);
             var b = greatsword.TransformPoint(Vector3.Lerp(baseL, tipL, SegmentAt[Mathf.Max(0, lit - 1)]));
-            climb.SetPosition(0, a);
-            climb.SetPosition(1, b);
-            var w = 0.07f + 0.03f * Mathf.Sin(Time.time * 30f);
-            climb.startWidth = w;
-            climb.endWidth = w * 0.6f;
-            var c = Color.Lerp(WardenFx.Crimson, Color.white, lit >= SegmentAt.Length ? 0.5f : 0.1f);
-            climb.startColor = climb.endColor = c;
+            // Stepped beat that quickens as the count climbs — the tip lit = the swing is now.
+            var full = lit >= SegmentAt.Length;
+            var on = Throb(2f + lit * 0.8f, 0f, 0.75f);
+            var w = (full ? 0.06f : 0.045f) * (on > 0.9f ? 1.25f : 1f);
+            Stroke(climb, climbInk, a, b, w, w * 0.6f, WardenFx.Crimson, on);
+            var tint = WardenFx.Crimson * (on > 0.9f ? 1.6f : 1.3f);
+            tint.a = 1f;
             foreach (var s in segs)
             {
                 if (s == null || !s.gameObject.activeSelf) continue;
                 var r = s.GetComponent<MeshRenderer>();
                 mpb.Clear();
-                mpb.SetColor(TintId, WardenFx.Crimson * (1.6f + 0.4f * Mathf.Sin(Time.time * 20f)));
+                mpb.SetColor(TintId, tint);
                 r.SetPropertyBlock(mpb);
             }
         }

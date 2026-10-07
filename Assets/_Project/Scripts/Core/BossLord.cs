@@ -81,6 +81,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         public int played;                         // the state actually playing (fallbacks included)
         public int requiresState;                  // scripted read that only makes sense with this state present
         public bool linkRolled;
+        public bool rootY;                         // authored leap arc: the clip's root Y reaches the capsule while it plays
     }
 
     /// <summary>One branch out of a cut: where the string can go next, and when.</summary>
@@ -137,10 +138,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
     [Header("Presentation")]
     [SerializeField] private Animator bossAnimator;
-    [SerializeField] private FxCue roarFx;
-    [SerializeField] private FxCue slamFx;
-    [SerializeField] private FxCue reviveFx;
-    [SerializeField] private FxCue teleportFx;
 
     [Header("Warden arena (Setup Warden Fight wires this)")]
     [SerializeField] private CoreSanctum sanctum;
@@ -258,6 +255,27 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         return 0;
     }
 
+    /// <summary>The state hash <see cref="Play"/> would actually play for <paramref name="id"/>
+    /// (the fallback chain walked, up to four hops); 0 when nothing resolves.</summary>
+    internal int ResolvedState(int id)
+    {
+        if (bossAnimator == null || bossAnimator.runtimeAnimatorController == null) return 0;
+        for (var hop = 0; hop < 4 && id != 0 && !bossAnimator.HasState(0, id); hop++) id = Fallback(id);
+        return id != 0 && bossAnimator.HasState(0, id) ? id : 0;
+    }
+
+    private static readonly HashSet<int> missingStates = new HashSet<int>();
+    private static bool staleControllerWarned;
+
+    /// <summary>A state hash back to its name (the static "…Id" fields) — only for the one-time warnings.</summary>
+    private static string StateName(int id)
+    {
+        foreach (var f in typeof(BossLord).GetFields(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic))
+            if (f.IsInitOnly && f.FieldType == typeof(int) && f.Name.EndsWith("Id") && (int)f.GetValue(null) == id)
+                return f.Name.Substring(0, f.Name.Length - 2);
+        return id.ToString();
+    }
+
     private static readonly List<BossLord> all = new List<BossLord>();
 
     /// <summary>Any living, engaged Warden — WeaponSocket reads this beside BossGolem.AnyEngaged.</summary>
@@ -274,7 +292,9 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     // Strikes and the scripted lunges consume authored XZ; teleports, levitation
     // and dodges are code-owned so the relay's gravity can't drag him down.
     public bool DriveRootMotion => (mode == Mode.Attack || seqRootMotion) && !levitating;
-    public bool AllowRootY => false;
+    // Only an authored leap arc (a rootY table cut) lifts him, and only from its own live instance.
+    public bool AllowRootY => mode == Mode.Attack && current != null && current.rootY && current.played != 0
+                              && bossAnimator != null && FreshInstance(current.played, out _);
 
     // ---------- runtime ----------
 
@@ -317,9 +337,36 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     private Vector3 ArenaCenter => Sanctum != null ? Sanctum.Center : home;
     private Vector3 home;
     private bool Exposed => Time.time < exposedUntil;
+    private bool staggerPunish, corePrompt;
+    private float punishT, tetherT, edgeChipT;
+    // A state (re)started this frame reads time 0 until the animator has run; a crossfade
+    // onto the state already playing is verified the next frame (hard restart if ignored).
+    private int restartState, restartFrame = -1, verifyState, verifyFrame;
+    private SkinnedMeshRenderer bodySkin;
+
+    /// <summary>The visible body's skinned renderer (the largest under his Animator) — his afterimages bake it.</summary>
+    public SkinnedMeshRenderer BodySkin
+    {
+        get
+        {
+            if (bodySkin != null || bossAnimator == null) return bodySkin;
+            var best = 0;
+            foreach (var s in bossAnimator.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                var n = s.sharedMesh != null ? s.sharedMesh.vertexCount : 0;
+                if (n > best) { best = n; bodySkin = s; }
+            }
+            return bodySkin;
+        }
+    }
 
     private void OnEnable() => all.Add(this);
-    private void OnDisable() => all.Remove(this);
+
+    private void OnDisable()
+    {
+        all.Remove(this);
+        if (corePrompt) { corePrompt = false; GameHud.HidePrompt(); }
+    }
 
     private void Awake()
     {
@@ -351,7 +398,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         poise = poiseMax;
         home = transform.position;
         BuildMoves();
-        InitMelee();
         var p = FindFirstObjectByType<PlayerLocomotion>();
         if (p != null)
         {
@@ -368,6 +414,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     {
         floorY = Sanctum != null ? Sanctum.Center.y : transform.position.y;
         blade.FloorY = floorY;
+        // The child Animator is initialised by now (Awake order across objects isn't guaranteed).
+        InitMelee();
     }
 
     private void OnDestroy()
@@ -438,6 +486,13 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         mode = Mode.Chase;
         floorY = Sanctum != null ? Sanctum.Center.y : home.y;
         blade.FloorY = floorY;
+        InitMelee();
+        if (!staleControllerWarned && bossAnimator != null && bossAnimator.runtimeAnimatorController != null
+            && bossAnimator.isInitialized && (!bossAnimator.HasState(0, SevenCut5Id) || !hasMoveXY))
+        {
+            staleControllerWarned = true;
+            Debug.LogWarning("[Warden] BossLordBase.controller is out of date — run Tools > Project Restart > Setup Warden Fight (Core Sanctum); cuts fall back to the old katana takes", this);
+        }
         GameHud.Boss(health, displayName, phaseAt);
         WardenAudio.Bed(true);
         ResetMelee();
@@ -470,7 +525,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         poiseWait = 0f;
         verticalSpeed = 0f;
         exposedUntil = 0f;
-        counterReady = false;
+        counterReady = staggerPunish = false;
         foreach (var list in new[] { p1Moves, p2Moves, p3Moves }) foreach (var m in list) m.nextAllowed = 0f;
         ResetMelee();
         body.ResetAll();
@@ -479,7 +534,11 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         pose?.Kill();
         Sanctum?.ResetArena();
         if (bossAnimator != null) { AnimSpeed(1f); bossAnimator.Rebind(); }
+        restartState = verifyState = 0;
         GameHud.BossClear();
+        // No finale prompt survives a death.
+        corePrompt = false;
+        GameHud.HidePrompt();
     }
 
     /// <summary>Every Warden back to its spawn — called beside BossGolem.ResetAll.</summary>
@@ -539,11 +598,12 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             health.Invulnerable = true;
             if (health.Current <= 0.5f) health.Revive(finaleAt * 0.95f);
         }
-        // Stuck in the stone after a big miss: every hit bites deep into his posture.
+        // Stuck in the stone after a big miss: every hit bites deep into his posture
+        // (purple chips — the suit is making him pay).
         if (Exposed)
         {
             poiseDamage *= exposedPoiseScale;
-            WardenFx.Shards(Chest, 4, 2f, WardenFx.Crimson, false, 0.9f, 0.4f);
+            WardenFx.Chips(Chest, 4, 2.2f, Vector3.zero, 0.4f, WardenFx.PurpleBright, 1f);
         }
         if (mode == Mode.Chase || mode == Mode.Attack) pressure = Mathf.Min(3f, pressure + 0.6f);
         if (mode == Mode.Sequence && !Exposed) return;
@@ -567,21 +627,32 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             WardenHazard.ClearAll();
             EndSequenceState();
         }
+        // The break reads on his body, never as text: the impact peak, a faceted ring and
+        // crimson chips off the chest, the blade going cold with its tip dropping, his
+        // heart lurching — and purple on the chest (PunishRead) when the suit can punish
+        // it (P3 / exposed).
+        staggerPunish = phase == 2 || Exposed;
         mode = Mode.Staggered;
         modeT = 0f;
         current = null;
         Play(phase == 2 ? StaggerHeavyId : StaggerId, 0.12f);
-        WardenFx.Shards(Chest, 16, 3.5f, WardenFx.Crimson, false, 1.2f, 0.7f);
-        WardenFx.Peak(Chest, 0.8f);
-        WardenAudio.Play("shatter", Chest, 0.8f, 0.8f);
+        var chest = Chest;
+        WardenFx.Peak(chest, 0.5f);
+        WardenFx.Pulse(chest, ToCam(chest), 0.2f, 1.1f, 0.3f, WardenFx.Crimson, 1.2f, WardenFx.CoreSides);
+        WardenFx.Chips(chest, 14, 3.4f, Vector3.zero, 0.55f, WardenFx.Crimson, 1.3f);
+        blade.Swinging = false;
+        blade.Heat = 0f;
+        if (blade.HasBlade) WardenFx.Chips(blade.Tip, 6, 1.4f, Vector3.down * 0.6f, 0.45f, WardenFx.CrimsonDeep, 1f);
+        body.Beat(1.3f);
+        WardenAudio.Play("shatter", chest, 0.8f, 0.8f);
         WardenFx.HitStop(0.06f);
-        GameHud.Toast(phase == 2 ? "POSTURE BROKEN" : "STAGGERED");
     }
 
     // ================================================================== tick
 
     private void Update()
     {
+        VerifyRestart();
         if (player == null || defeated) return;
         if (health.IsDead) return;
         if (playerHealth != null && playerHealth.IsDead)
@@ -627,6 +698,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         }
 
         if (mode != Mode.Attack && mode != Mode.Sequence) { blade.Swinging = false; blade.Heat = Mathf.MoveTowards(blade.Heat, 0f, dt * 3f); }
+        if (Exposed || (mode == Mode.Staggered && staggerPunish)) PunishRead(dt);
+        else punishT = 0f;
 
         switch (mode)
         {
@@ -690,16 +763,25 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         modeT = 0f;
         current = null;
         Play(RoarId, 0.2f);
-        GameHud.Toast(displayName + " — SHATTERED");
-        ArtFx.Spawn(roarFx, transform, bossAnimator, player);
         body.SetCore(WardenBody.CoreMode.Glimmer);
         body.Beat(1f);
         WardenFx.Shake(0.4f);
         WardenAudio.Play("thump", Chest, 0.8f, 1f);
+        // The phase reads in the player's language, no banner: a giant Core sigil stamped
+        // under him, a white facet ring snapping open, the crimson ground ring, chips, an
+        // impact star at the chest — and his blade flaring.
+        var floor = FloorPoint(transform.position) + Vector3.up * 0.04f;
+        WardenFx.Stamp(floor, Vector3.up, 2.6f, WardenFx.Crimson, 1.6f);
+        WardenFx.Pulse(floor, Vector3.up, 0.3f, 2.1f, 0.26f, Color.white, 1.4f);
+        WardenFx.Ring(floor + Vector3.up * 0.01f, Vector3.up, 0.5f, 11f, 0.6f, WardenFx.Crimson, 0.14f, 24, 0.15f);
+        WardenFx.Chips(floor, 18, 4f, Vector3.up * 0.3f, 0.5f, WardenFx.Crimson, 1.3f);
+        WardenFx.Dust(floor, 10, 2.2f, 1.2f);
+        WardenFx.Star(Chest, WardenFx.Crimson, Vector3.up, 2.2f, 1.8f);
+        blade.Heat = 1f;
+        blade.Glint(1.3f);
         // The room answers first: every pillar cracks, the stones start to lift.
         Sanctum?.CrackPillars();
         Sanctum?.Instability(0.3f);
-        WardenFx.Ring(FloorPoint(transform.position) + Vector3.up * 0.05f, Vector3.up, 0.5f, 11f, 0.6f, WardenFx.Crimson, 0.14f, 32, 0.15f);
         cam?.Frame(4f, 0.12f, 0.3f, 1.6f);
         // The new reads open gradually, never all at once.
         var now = Time.time;
@@ -713,20 +795,40 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         impaler.nextAllowed = now + 16f;
     }
 
-    /// <summary>P3 footfalls: every step lands — a puff and a dull thud, no shake.</summary>
+    /// <summary>P3 footfalls: every step lands — the player's light-landing tap (a small
+    /// crimson facet ring) and a dull thud, no shake.</summary>
     private void HeavyStep(float dt)
     {
         stepT -= dt;
         if (stepT > 0f) return;
         stepT = 0.62f;
-        WardenFx.Dust(transform.position, 2, 0.7f, 0.55f);
+        WardenFx.Pulse(FloorPoint(transform.position) + Vector3.up * 0.03f, Vector3.up, 0.12f * bodySize, 0.38f * bodySize, 0.2f, WardenFx.Crimson, 0.8f);
         WardenAudio.Play("thud", transform.position, 0.22f, Random.Range(0.55f, 0.65f));
+    }
+
+    /// <summary>The punish read — purple on his chest every half second while the suit can
+    /// make him pay (exposed after a big miss, or a Phase 3 posture break).</summary>
+    private void PunishRead(float dt)
+    {
+        punishT -= dt;
+        if (punishT > 0f) return;
+        punishT = 0.5f;
+        var c = Chest;
+        WardenFx.Pulse(c, ToCam(c), 0.18f, 0.75f, 0.32f, WardenFx.PurpleBright, 1f, WardenFx.CoreSides);
+        WardenFx.Converge(c, 6, 0.9f, 0.28f, WardenFx.Purple);
+    }
+
+    private static Vector3 ToCam(Vector3 p)
+    {
+        var c = Camera.main;
+        return c != null ? c.transform.position - p : Vector3.up;
     }
 
     private bool ReadyInBand(Move m, float dist)
         => Time.time >= m.nextAllowed && dist >= m.pickMin && dist <= PickReach(m) * 1.15f
            && (!m.needsSanctum || Sanctum != null)
-           && (m.requiresState == 0 || (bossAnimator != null && bossAnimator.HasState(0, m.requiresState)));
+           && (m.requiresState == 0 || (bossAnimator != null && bossAnimator.HasState(0, m.requiresState)))
+           && (m.seq != null || ResolvedState(m.id) != 0);
 
     private static float PickReach(Move m) => m.pickMax > 0f ? m.pickMax : m.range;
 
@@ -777,8 +879,10 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         current = null;
         dodgeSide = transform.InverseTransformDirection(from - transform.position).x < 0f ? 1 : -1;
         dodgePlayed = Play(dodgeSide > 0 ? SideStepRId : SideStepLId, 0.08f, 1.25f);
-        WardenFx.Shards(Chest, 8, 2f, WardenFx.Crimson, false, 0.9f, 0.4f, -transform.right * dodgeSide);
-        WardenFx.Dust(transform.position, 3, 0.9f, 0.7f);
+        // The player's dodge: an afterimage left at push-off, a few chips flung off.
+        WardenFx.Ghost(BodySkin, WardenFx.Crimson, 0.34f);
+        WardenFx.Shards(Chest, 6, 2f, WardenFx.Crimson, false, 0.9f, 0.4f, -transform.right * dodgeSide);
+        WardenFx.Dust(transform.position, 2, 0.8f, 0.6f);
         WardenAudio.Play("swish", Chest, 0.5f, 1.3f);
     }
 
@@ -796,12 +900,14 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     {
         var m = current;
         if (m == null || bossAnimator == null) { EndSwing(); ToChase(); return; }
-        var info = bossAnimator.GetCurrentAnimatorStateInfo(0);
-        if (m.played == 0 || info.shortNameHash != m.played)
+        // No take and no fallback: the move is over at once — he never stands frozen.
+        if (m.played == 0) { EndSwing(); ToChase(); return; }
+        if (!FreshInstance(m.played, out var info))
         {
-            // Still crossfading in (or the state is missing entirely): keep closing and turning.
-            if (m.played != 0 && modeT < 0.6f) { TrackAndWarp(m, 0f, 0.5f, false, dt); return; }
-            if (modeT > (m.played == 0 ? 0.6f : 4f)) { EndSwing(); ToChase(); current = null; }
+            // Still crossfading in (or restarting the state that was already playing):
+            // keep closing and turning — never time windows off the outgoing instance.
+            if (modeT < 0.6f) { TrackAndWarp(m, 0f, 0.5f, false, dt); return; }
+            if (modeT > 4f) { EndSwing(); ToChase(); }
             return;
         }
         var nt = info.normalizedTime;
@@ -921,7 +1027,9 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             var fast = blade.TipSpeed >= blade.MinSpeed;
             var hugging = fast && to.magnitude <= 1.25f + body && Vector3.Angle(transform.forward, to) <= 70f && h > -1.5f && h < m.maxHeight;
             var tipFlat = Vector3.ProjectOnPlane(blade.Tip - transform.position, Vector3.up);
-            var reach = Mathf.Max(tipFlat.magnitude, blade.Length * 0.85f) + 0.55f + m.reach * 0.5f;
+            // Never further than an arm plus the blade, whatever the (mis)measured tip says.
+            var arm = 0.9f * bodySize * transform.lossyScale.x;
+            var reach = Mathf.Min(Mathf.Max(tipFlat.magnitude, blade.Length * 0.85f), arm + blade.Length) + 0.55f + m.reach * 0.5f;
             var pointing = fast && tipFlat.sqrMagnitude > 0.04f && Vector3.Angle(tipFlat, to) <= 32f
                            && to.magnitude <= reach && h > -1.5f && h < m.maxHeight;
             hit = blade.SweepHits(m.reach) || hugging || pointing;
@@ -934,14 +1042,17 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     }
 
     /// <summary>The feel of his blade landing: a short pause, a sharp kick, a bass hit
-    /// on the heavy ones, and the impact star at the wound.</summary>
+    /// on the heavy ones, and the player's own impact star + sparks at the wound, in
+    /// crimson, thrown along the blade's travel.</summary>
     private void Connect(float damage)
     {
         var at = WardenHazard.Chest;
         var heavy = damage >= 34f;
-        WardenFx.Spikes(at, heavy ? 10 : 7, heavy ? 1.2f : 0.85f, WardenFx.Crimson, 0.2f, heavy ? 0.09f : 0.07f);
-        WardenFx.Peak(at, heavy ? 0.6f : 0.4f);
-        WardenFx.Sparks(at, (at - blade.Tip).normalized, 6, 4f);
+        var swing = blade.HasBlade ? blade.TipVelocity : Vector3.zero;
+        if (swing.sqrMagnitude < 0.25f) swing = at - (blade.HasBlade ? blade.Tip : Chest);
+        WardenFx.Star(at, WardenFx.Crimson, swing, heavy ? 2f : 1.4f);
+        HitFx.Spawn(at, swing, heavy ? 1.6f : 1f, WardenFx.Crimson);
+        if (heavy) WardenFx.Peak(at, 0.45f);
         WardenFx.HitStop(heavy ? 0.08f : 0.045f);
         WardenFx.Shake(heavy ? 0.3f : 0.16f);
         WardenAudio.Play("metal", at, heavy ? 0.9f : 0.6f, Random.Range(0.9f, 1.05f));
@@ -1042,17 +1153,76 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     private int Play(int id, float fade = 0.15f, float speed = 1f)
     {
         if (bossAnimator == null) return 0;
-        bossAnimator.speed = speed;
         // Missing states (setup not re-run) walk down the fallback chain.
-        for (var hop = 0; hop < 4 && id != 0 && !bossAnimator.HasState(0, id); hop++) id = Fallback(id);
-        if (id == 0 || !bossAnimator.HasState(0, id)) return 0;
-        bossAnimator.CrossFadeInFixedTime(id, fade, 0);
-        return id;
+        var state = ResolvedState(id);
+        if (state == 0)
+        {
+            if (id != 0 && missingStates.Add(id))
+                Debug.LogWarning($"[Warden] Animator state '{StateName(id)}' is missing from {bossAnimator.name}'s controller and has no fallback — that beat runs on its timeout.", this);
+            return 0;
+        }
+        bossAnimator.speed = speed;
+        // Re-entering the state already playing (a string link, or a cut right after the
+        // same take): crossfade into a NEW instance from its start — verified next frame,
+        // with a hard restart if the animator ignored it.
+        var again = StateActive(state);
+        if (again) bossAnimator.CrossFadeInFixedTime(state, fade, 0, 0f);
+        else bossAnimator.CrossFadeInFixedTime(state, fade, 0);
+        verifyState = again ? state : 0;
+        verifyFrame = Time.frameCount;
+        restartState = state;
+        restartFrame = Time.frameCount;
+        return state;
     }
 
+    /// <summary>Is <paramref name="state"/> the current state, or the one being faded into?</summary>
+    private bool StateActive(int state)
+    {
+        if (bossAnimator.GetCurrentAnimatorStateInfo(0).shortNameHash == state) return true;
+        return bossAnimator.IsInTransition(0) && bossAnimator.GetNextAnimatorStateInfo(0).shortNameHash == state;
+    }
+
+    /// <summary>The frame after a crossfade onto the playing state: if the animator didn't
+    /// start a transition into a new instance, restart the state outright.</summary>
+    private void VerifyRestart()
+    {
+        if (verifyState == 0 || bossAnimator == null || Time.frameCount <= verifyFrame) return;
+        var s = verifyState;
+        verifyState = 0;
+        if (bossAnimator.IsInTransition(0) && bossAnimator.GetNextAnimatorStateInfo(0).shortNameHash == s) return;
+        if (bossAnimator.GetCurrentAnimatorStateInfo(0).shortNameHash != s) return;
+        bossAnimator.Play(s, 0, 0f);
+        restartState = s;
+        restartFrame = Time.frameCount;
+    }
+
+    /// <summary>True once the move's own instance of <paramref name="state"/> is current and
+    /// fully faded in. False on the frame it was (re)started, while its restart is unverified
+    /// and while it is still fading in — so a cut entered on the state that was already
+    /// playing never reads the outgoing instance's time.</summary>
+    private bool FreshInstance(int state, out AnimatorStateInfo info)
+    {
+        info = bossAnimator.GetCurrentAnimatorStateInfo(0);
+        if (state == restartState && Time.frameCount == restartFrame) return false;
+        if (state == verifyState) return false;
+        if (bossAnimator.IsInTransition(0) && bossAnimator.GetNextAnimatorStateInfo(0).shortNameHash == state) return false;
+        return info.shortNameHash == state;
+    }
+
+    /// <summary>Normalized time of the LIVE instance of <paramref name="id"/> (resolved through
+    /// the fallbacks): the incoming side of a crossfade, 0 on the frame it was (re)started,
+    /// -1 when it isn't playing.</summary>
     private float StateTime(int id)
     {
         if (bossAnimator == null || id == 0) return -1f;
+        id = ResolvedState(id);
+        if (id == 0) return -1f;
+        if (id == restartState && Time.frameCount == restartFrame) return 0f;
+        if (bossAnimator.IsInTransition(0))
+        {
+            var next = bossAnimator.GetNextAnimatorStateInfo(0);
+            if (next.shortNameHash == id) return next.normalizedTime;
+        }
         var info = bossAnimator.GetCurrentAnimatorStateInfo(0);
         return info.shortNameHash == id ? info.normalizedTime : -1f;
     }
@@ -1143,7 +1313,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         EndLevitate();
         if (puff)
         {
-            WardenFx.Dust(transform.position, 5, 1.3f, 0.9f);
+            WardenFx.Pulse(FloorPoint(transform.position) + Vector3.up * 0.03f, Vector3.up, 0.15f, 0.6f, 0.24f, WardenFx.Crimson, 1f);
+            WardenFx.Dust(transform.position, 3, 1f, 0.8f);
             WardenAudio.Play("thud", transform.position, 0.45f, 0.8f);
         }
     }
@@ -1213,10 +1384,10 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     {
         Play(TeleportOutId, 0.1f, 1.3f);
         yield return Wait(0.18f);
-        WardenFx.Shards(Chest, 26, 4.5f, WardenFx.Crimson, false, 1.3f, 0.6f, null, 0.7f);
-        WardenFx.Shards(Chest, 10, 1.5f, WardenFx.Crimson, true, 1f, 0.9f, null, 0.5f);
+        WardenFx.Shards(Chest, 16, 4.5f, WardenFx.Crimson, false, 1.3f, 0.6f, null, 0.7f);
+        WardenFx.Shards(Chest, 8, 1.5f, WardenFx.Crimson, true, 1f, 0.9f, null, 0.5f);
         WardenAudio.Play("shatter", Chest, 0.7f, 1.2f);
-        ArtFx.Spawn(teleportFx, transform, bossAnimator, player);
+        BlinkOut(pos);
         SetVisible(false);
         SetTangible(false);
         yield return Wait(0.3f);
@@ -1226,8 +1397,41 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         yield return Wait(0.16f);
         SetTangible(true);
         SetVisible(true);
-        WardenFx.Shards(Chest, 10, 2.5f, WardenFx.Crimson, false, 1f, 0.4f);
+        BlinkIn();
+        WardenFx.Shards(Chest, 8, 2.5f, WardenFx.Crimson, false, 1f, 0.4f);
         Play(TeleportInId, 0.06f, 1.3f);
+    }
+
+    /// <summary>Leaving, in the player's dodge language: afterimages of his own body
+    /// peeling off along the exit toward <paramref name="toward"/>, a crimson facet
+    /// ring at his feet and chips. (Call while he is still visible.)</summary>
+    private void BlinkOut(Vector3 toward)
+    {
+        var feet = FloorPoint(transform.position) + Vector3.up * 0.04f;
+        var skin = BodySkin;
+        if (skin != null)
+        {
+            // Each ghost bakes the current pose; the root is nudged along the exit for the
+            // bake and put straight back (same frame — the capsule never sees it).
+            var dir = FlatDir(toward - transform.position);
+            var root = transform.position;
+            for (var i = 0; i < 3; i++)
+            {
+                transform.position = root + dir * (0.45f * i);
+                WardenFx.Ghost(skin, WardenFx.Crimson, 0.3f + 0.08f * i);
+            }
+            transform.position = root;
+        }
+        WardenFx.Pulse(feet, Vector3.up, 0.25f, 1.3f, 0.3f, WardenFx.Crimson, 1.1f);
+        WardenFx.Chips(feet, 8, 2.6f, Vector3.up * 0.3f, 0.4f, WardenFx.Crimson, 1.1f);
+    }
+
+    /// <summary>Arriving: a white then a crimson 8-gon snapping open at his feet.</summary>
+    private void BlinkIn()
+    {
+        var feet = FloorPoint(transform.position) + Vector3.up * 0.04f;
+        WardenFx.Pulse(feet, Vector3.up, 0.1f, 0.8f, 0.14f, Color.white, 1f, WardenFx.CoreSides);
+        WardenFx.Pulse(feet, Vector3.up, 0.2f, 1.5f, 0.3f, WardenFx.Crimson, 1.1f, WardenFx.CoreSides);
     }
 
     // ================================================================== sequence swing helpers
@@ -1237,14 +1441,18 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     /// <summary>A blade swing inside a sequence: heat climbs, the glint flashes just
     /// before <paramref name="from"/>, then trail + blade contact are live until
     /// <paramref name="to"/> (normalized time of state <paramref name="id"/>). A heavy
-    /// lands its impact where the blade meets the floor. Sets <see cref="lastSwingHit"/>.</summary>
+    /// lands its impact where the blade meets the floor. Sets <see cref="lastSwingHit"/>.
+    /// <paramref name="edge"/> = the big sweeps' emphasis, tied to the real blade: chips
+    /// flung off the tip along its travel, a Core sigil where the edge bites the floor.</summary>
     private IEnumerator Swing(int id, float from, float to, float damage, float reach = 0.6f, float force = 1f,
-                              float impact = 0f, float shake = 0f, float hitstop = 0f, float maxHeight = 3f, float timeout = 2.5f)
+                              float impact = 0f, float shake = 0f, float hitstop = 0f, float maxHeight = 3f, float timeout = 2.5f,
+                              bool edge = false)
     {
         var m = new Move { damage = damage, reach = reach, force = force, impact = impact, shake = shake, hitstop = hitstop,
                            maxHeight = maxHeight, range = 4.2f, arc = 140f };
         var t = 0f;
         var glinted = false;
+        var stamped = false;
         while (t < timeout)
         {
             // A missing/never-current state falls back to a short timed beat.
@@ -1266,12 +1474,32 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             guard += Time.deltaTime;
             if (!m.struck && BladeContact(m)) m.struck = true;
             if (impact > 0f && !m.impacted && blade.FloorContactThisSwing) StrikeImpact(m, blade.LastFloorContact);
+            if (edge)
+            {
+                EdgeChips(Time.deltaTime);
+                if (impact <= 0f && !stamped && blade.FloorContactThisSwing)
+                {
+                    stamped = true;
+                    WardenFx.Stamp(FloorPoint(blade.LastFloorContact) + Vector3.up * 0.03f, Vector3.up, 0.8f, WardenFx.Crimson, 0.9f);
+                }
+            }
             yield return null;
         }
         if (impact > 0f && !m.impacted) StrikeImpact(m, FrontPoint(2.2f));
         blade.Swinging = false;
         blade.Heat = 0f;
         lastSwingHit = m.struck;
+    }
+
+    /// <summary>Crimson chips flung off the real blade's tip along its travel while it moves
+    /// at swing speed — the big cuts' weight, drawn from the sword itself (never a fake arc).</summary>
+    private void EdgeChips(float dt)
+    {
+        edgeChipT -= dt;
+        if (edgeChipT > 0f || !blade.HasBlade || blade.TipSpeed < blade.MinSpeed) return;
+        edgeChipT = 0.05f;
+        var v = blade.TipVelocity;
+        WardenFx.Chips(blade.Tip, 2, Mathf.Min(v.magnitude * 0.25f, 4f), v.normalized * 0.8f, 0.3f, WardenFx.Crimson, 0.9f);
     }
 
     /// <summary>The punish window after a big miss: the blade is wedged in the stone.
@@ -1305,8 +1533,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         WardenAudio.StopLoop(scrape);
         exposedUntil = 0f;
         // Ripped free.
-        WardenFx.Debris(at, 10, 6f, 1.3f, Vector3.up * 0.6f);
-        WardenFx.Dust(at, 6, 1.4f, 1f);
+        WardenFx.Debris(at, 8, 6f, 1.2f, Vector3.up * 0.6f);
+        WardenFx.Dust(at, 4, 1.4f, 1f);
         WardenFx.Sparks(at, Vector3.up, 10, 6f);
         WardenAudio.Play("stone", at, 0.9f, 0.7f);
         WardenFx.Shake(0.12f);
@@ -1315,32 +1543,23 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
     // ================================================================== Phase 2 — "still in control"
 
-    /// <summary>Sword low, body twisting; a thin red arc across the floor; the edge
-    /// heats and glints; then a low sweep and a red floor wave. Jump it.</summary>
+    /// <summary>Sword low, body twisting; the edge heats and glints; then a low sweep —
+    /// the blade's own trail carries the cut — and a red floor wave. Jump it.</summary>
     private IEnumerator CrimsonSweep()
     {
         var id = Play(CrimsonSweepId, 0.15f, 0.85f);
         yield return Until(id, 0.24f, 0.9f, 260f);
         AnimSpeed(0.04f);
-        var arcPts = new List<Vector3>();
-        for (var i = 0; i <= 14; i++)
-        {
-            var d = Quaternion.AngleAxis(-85f + 170f * i / 14f, Vector3.up) * FlatDir(transform.forward);
-            arcPts.Add(FloorPoint(transform.position) + d * 3.4f + Vector3.up * 0.04f);
-        }
-        WardenFx.Line(arcPts, WardenFx.Crimson, 0.07f, 0.75f, 0.12f, 0.7f);
         WardenAudio.Play("scrape", transform.position, 0.35f, 1.4f);
         WardenFx.Shards(FrontPoint(1.4f) + Vector3.up * 0.2f, 6, 1.2f, WardenFx.Crimson, false, 0.8f, 0.4f);
         var t = 0f;
         while (t < 0.38f) { t += Time.deltaTime; blade.Heat = t / 0.38f; yield return null; }
         AnimSpeed(1.15f);
-        var c = FloorPoint(transform.position) + Vector3.up * 0.6f;
-        WardenFx.Crescent(c, Vector3.up, Quaternion.AngleAxis(-90f, Vector3.up) * FlatDir(transform.forward), 3.4f, 180f, WardenFx.Crimson, 0.14f, 0.3f, 0.07f);
         WardenAudio.Play("slash", transform.position, 0.9f, 0.85f);
         GroundWave.Spawn(FloorPoint(transform.position), transform.forward, 240f, 10.5f, 13f, 0.85f, 16f, false, 1.2f);
         WardenFx.Shards(FrontPoint(2f) + Vector3.up * 0.15f, 14, 4f, WardenFx.Crimson, false, 0.9f, 0.45f, transform.right);
         WardenFx.Shake(0.12f);
-        yield return Swing(id, 0.33f, 0.43f, 24f, 0.6f, 1.2f, maxHeight: 1.1f);
+        yield return Swing(id, 0.33f, 0.43f, 24f, 0.6f, 1.2f, maxHeight: 1.1f, edge: true);
         yield return Until(id, 0.95f, 1.6f);
     }
 
@@ -1430,11 +1649,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     {
         Play(TeleportOutId, 0.1f, 1.3f);
         yield return Wait(0.16f);
-        WardenFx.Shards(Chest, 28, 4.5f, WardenFx.Crimson, false, 1.3f, 0.6f, null, 0.7f);
-        WardenAudio.Play("shatter", Chest, 0.7f, 1.2f);
-        ArtFx.Spawn(teleportFx, transform, bossAnimator, player);
-        SetVisible(false);
-        SetTangible(false);
 
         // Reappear on a flank, a dash-length away, aimed through where you stand now.
         var target = FloorPoint(player.position);
@@ -1442,6 +1656,12 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         var away = Quaternion.AngleAxis(ang, Vector3.up) * -FlatDir(player.forward);
         var start = target + away * (teleportRange + 3.5f);
         if (Sanctum != null) start = Sanctum.ClampToPlatform(start, 1.2f);
+
+        WardenFx.Shards(Chest, 16, 4.5f, WardenFx.Crimson, false, 1.3f, 0.6f, null, 0.7f);
+        WardenAudio.Play("shatter", Chest, 0.7f, 1.2f);
+        BlinkOut(start);
+        SetVisible(false);
+        SetTangible(false);
         var dir = FlatDir(target - start);
         var len = Vector3.Distance(FloorPoint(start), target) + 4f;
         var mark = WardenMark.Line(start, start + dir * len, 0.95f, WardenFx.Crimson, 0.07f, 0.18f);
@@ -1452,8 +1672,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         transform.SetPositionAndRotation(FloorPoint(start), Quaternion.LookRotation(dir, Vector3.up));
         SetTangible(true);
         SetVisible(true);
-        WardenFx.Shards(Chest, 12, 2.5f, WardenFx.Crimson, false, 1f, 0.4f);
-        WardenFx.Peak(Chest, 0.5f);
+        BlinkIn();
+        WardenFx.Shards(Chest, 10, 2.5f, WardenFx.Crimson, false, 1f, 0.4f);
         mark.Release(0.3f);
         var id = Play(RushDrawId, 0.05f, 1.35f);
         blade.Glint(1.2f);
@@ -1498,7 +1718,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         body.FloatSword(true);
         SyncSword();
         body.Charge(0.5f);
-        GameHud.Toast("THOUSAND-BLADE JUDGMENT");
         WardenAudio.Play("hum", Chest, 0.9f, 1f);
         StartCoroutine(MoodTo(1f, 1.2f));
         cam?.Frame(6f, 0.22f, 0.8f, 9.5f, 1.2f, 1.4f);
@@ -1600,7 +1819,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         SyncSword();
         pose?.Kill();
         WardenAudio.Bed(false);                                  // the room goes silent
-        WardenFx.Dust(feet, 6, 1.4f, 1.1f);
+        WardenFx.Dust(feet, 4, 1.4f, 1.1f);
         WardenAudio.Play("thud", feet, 0.8f, 0.7f);
         yield return Wait(1.3f);                                  // silence
 
@@ -1638,7 +1857,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         poise = corePoiseMax;
         yield return Wait(2.2f);
 
-        GameHud.Boss(health, displayName + " — FORSAKEN", finaleAt);
+        GameHud.Boss(health, displayName, finaleAt);
         health.Invulnerable = false;
         inTransition = false;
         var now = Time.time;
@@ -1672,17 +1891,18 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     {
         var id = Play(TwinRuptureId, 0.2f, 0.85f);
         var c = FloorPoint(transform.position);
-        var inner = WardenMark.Circle(c, 2.4f, WardenFx.Crimson, 0.08f, 0.06f, 36);
-        var outer = WardenMark.Circle(c, 3.6f, WardenFx.Crimson, 0.08f, 0.04f, 36);
+        var inner = WardenMark.Circle(c, 2.4f, WardenFx.Crimson, 0.08f, 0.06f, WardenFx.RingSides);
+        var outer = WardenMark.Circle(c, 3.6f, WardenFx.Crimson, 0.08f, 0.04f, WardenFx.RingSides);
         var t = 0f;
         while (StateTime(id) < 0.413f && t < 2.2f)
         {
             t += Time.deltaTime;
             if (StateTime(id) < 0.3f) Face(ToPlayerFlat, Time.deltaTime, 140f);
             c = FloorPoint(transform.position);
-            var pulse = 0.5f + 0.5f * Mathf.Sin(t * 12f);
-            inner.SetCircle(c, 2.4f); inner.SetPulse(pulse);
-            outer.SetCircle(c, 3.6f); outer.SetPulse(1f - pulse);
+            // The two rings trade a stepped beat (never a smooth flicker): inner, outer, inner…
+            var innerBeat = Mathf.FloorToInt(t * 3.8f) % 2 == 0;
+            inner.SetCircle(c, 2.4f); inner.SetPulse(innerBeat ? 1f : 0.3f);
+            outer.SetCircle(c, 3.6f); outer.SetPulse(innerBeat ? 0.3f : 1f);
             yield return null;
         }
         var impact = FrontPoint(1.4f);
@@ -1749,15 +1969,13 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         body.SetCore(WardenBody.CoreMode.Exposed);
         body.Charge(0f);
         // Still prying the blade out of the floor — the long punish window, and the
-        // jump off the wall is the way in: every hit now breaks his posture fast.
+        // jump off the wall is the way in: every hit now breaks his posture fast. The
+        // purple pulse on his chest (PunishRead) says so — no text.
         pose?.Clear(0.6f);
-        if (!exposedHinted) { exposedHinted = true; GameHud.Toast("THE CORE IS EXPOSED"); }
         yield return Stuck(2.2f, swordAt);
         AnimSpeed(0.6f);
         yield return Until(id, 0.95f, 2.2f);
     }
-
-    private static bool exposedHinted;
 
     /// <summary>Greatsword dragged behind him, sparks off the stone; the walls light
     /// purple — then one huge sweep sends a tall wave across the platform. Get on
@@ -1797,12 +2015,11 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         WardenAudio.Play("slash", c, 1f, 0.6f);
         WardenAudio.Play("boom", c, 0.7f, 1.2f);
         WardenFx.Shake(0.22f);
-        WardenFx.Crescent(c + Vector3.up * 1.1f, Vector3.up, -FlatDir(transform.forward), 4.8f, 330f, WardenFx.Crimson, 0.2f, 0.32f, 0.12f);
-        WardenFx.Crescent(c + Vector3.up * 0.4f, Vector3.up, -FlatDir(transform.forward), 5.6f, 330f, WardenFx.CrimsonDeep, 0.1f, 0.28f, 0.14f);
         MeleeHit(5f, 240f, 34f, 2.4f);
         GroundWave.Spawn(c, transform.forward, 360f, OuterReach, 12f, 2.4f, 30f, true, 1.2f, 0.8f);
-        // The radial cut above is the damage; the blade's own pass carves the room.
-        yield return Swing(id, StateTime(id) + 0.01f, 0.52f, 0f, 0.75f, 2.2f, timeout: 1f);
+        // The radial cut above is the damage; the blade's own pass (its trail, the chips off
+        // its tip, the sigil where it bites the stone) carves the room.
+        yield return Swing(id, StateTime(id) + 0.01f, 0.52f, 0f, 0.75f, 2.2f, timeout: 1f, edge: true);
         yield return Wait(0.8f);
         Sanctum?.ChargeWalls(0f);
         yield return Until(id, 0.95f, 1.6f);
@@ -1823,7 +2040,9 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
         var hangId = Play(KingsFallHangId, 0.1f, 1f);
         WardenAudio.Play("whoom", Chest, 0.8f, 1.6f);
-        WardenFx.Dust(transform.position, 8, 2f, 1.2f);
+        // Take-off, the player's way: a facet ring under him and a few chips — no puffs.
+        WardenFx.Pulse(FloorPoint(transform.position) + Vector3.up * 0.04f, Vector3.up, 0.3f, 1.6f, 0.3f, WardenFx.Crimson, 1.2f);
+        WardenFx.Dust(transform.position, 4, 1.6f, 1f);
         if (bossAnimator != null) bossAnimator.transform.localRotation = Quaternion.Euler(24f, 0f, 0f);
         cam?.Frame(5f, 0.18f, 1.2f, 3.6f, 0.3f, 0.9f);
         yield return LiftTo(8f, 0.42f, violent: true);
@@ -1831,8 +2050,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
         const float inner = 3.6f, outerStart = 9.5f, window = 2.2f, lockAt = 1.35f;
         var target = LandingTarget(FloorPoint(WardenHazard.Feet));
-        var innerMark = WardenMark.Circle(target, inner, WardenFx.Crimson, 0.1f, 0.12f, 40);
-        var outerMark = WardenMark.Circle(target, outerStart, WardenFx.Crimson, 0.09f, 0f, 40);
+        var innerMark = WardenMark.Circle(target, inner, WardenFx.Crimson, 0.1f, 0.12f, WardenFx.RingSides);
+        var outerMark = WardenMark.Circle(target, outerStart, WardenFx.Crimson, 0.09f, 0f, WardenFx.RingSides);
         var t = 0f;
         var hushed = false;
         while (t < window)
@@ -2040,7 +2259,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         var floorCentre = FloorPoint(centre);
         Play(LocomotionHeavyId, 0.4f, 1f);
         SetSpeed(0f);
-        GameHud.Toast("END OF THE WARDEN");
         if (Vector3.ProjectOnPlane(transform.position - centre, Vector3.up).magnitude > 1.5f)
             yield return BlinkTo(centre, ToPlayerFlat);
         WardenAudio.Bed(false);
@@ -2085,8 +2303,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         pose?.Set(WardenPose.Kind.Overhead, 0.3f);
         yield return Until(raise, 0.3f, 1f);
         AnimSpeed(0.02f);
-        var r1 = WardenMark.Circle(floorCentre, 2.6f, WardenFx.Crimson, 0.1f, 0.06f, 40);
-        var r2 = WardenMark.Circle(floorCentre, 4f, WardenFx.Crimson, 0.1f, 0.04f, 40);
+        var r1 = WardenMark.Circle(floorCentre, 2.6f, WardenFx.Crimson, 0.1f, 0.06f, WardenFx.RingSides);
+        var r2 = WardenMark.Circle(floorCentre, 4f, WardenFx.Crimson, 0.1f, 0.04f, WardenFx.RingSides);
         t = 0f;
         while (t < 0.9f) { t += Time.deltaTime; r1.SetPulse(t / 0.9f); r2.SetPulse(t / 0.9f); Heartbeat(ref beat, 1f); yield return null; }
         r1.Release(0.1f);
@@ -2115,9 +2333,9 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             cam?.Frame(7f, 0.3f, 1.4f, 7.5f, 0.8f, 1f);
             body.SetCore(WardenBody.CoreMode.Open);
             Sanctum?.ChargeWalls(1f);
-            GameHud.ShowPrompt("SPC", "LEAP TO THE CORE");
             var countdown = 6.5f;
             t = 0f;
+            tetherT = 0f;
             var lit = 0;
             var struck = false;
             while (t < countdown)
@@ -2126,8 +2344,12 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
                 Heartbeat(ref beat, Mathf.Lerp(0.8f, 0.35f, t / countdown));
                 var want = Mathf.Min(5, Mathf.FloorToInt(t / countdown * 5f) + 1);
                 if (want != lit) { lit = want; body.Countdown(lit); body.Charge(lit / 5f); }
+                // The suit's purple tether to the Core; the prompt only while a jump press WOULD leap.
+                CoreTether(Time.deltaTime);
+                CorePrompt(CoreLeapArmed());
                 if (CoreLeapRequested())
                 {
+                    CorePrompt(false);
                     var leap = CoreLeap();
                     while (leap.MoveNext()) yield return leap.Current;
                     if (coreStruck) { struck = true; break; }
@@ -2135,7 +2357,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
                 if (CoreStrikeInReach()) { struck = true; break; }
                 yield return null;
             }
-            GameHud.HidePrompt();
+            CorePrompt(false);
             WardenAudio.Unduck();
             if (struck || coreStruck)
             {
@@ -2178,13 +2400,40 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
     /// <summary>A jump press in the air (double jump or wall jump) within reach of
     /// the floating Core — the suit answers the Core.</summary>
-    private bool CoreLeapRequested()
+    private bool CoreLeapRequested() => CoreLeapArmed() && playerLoco.JumpAction.WasPressedThisFrame();
+
+    /// <summary>Would a jump press leap right now? Airborne or on a wall, within reach of the Core.</summary>
+    private bool CoreLeapArmed()
     {
         if (playerLoco == null || playerLoco.JumpAction == null || !WardenHazard.Alive) return false;
-        if (!playerLoco.JumpAction.WasPressedThisFrame()) return false;
         if (WardenHazard.Grounded && !WardenHazard.WallRunning) return false;
-        var flat = Vector3.ProjectOnPlane(body.CorePosition - WardenHazard.Feet, Vector3.up).magnitude;
-        return flat <= 17f;
+        return CoreInRange();
+    }
+
+    private bool CoreInRange() => Vector3.ProjectOnPlane(body.CorePosition - WardenHazard.Feet, Vector3.up).magnitude <= 17f;
+
+    /// <summary>The leap prompt — shown only while the leap is armed, hidden otherwise.</summary>
+    private void CorePrompt(bool on)
+    {
+        if (on == corePrompt) return;
+        corePrompt = on;
+        if (on) GameHud.ShowPrompt("SPC", "LEAP TO THE CORE");
+        else GameHud.HidePrompt();
+    }
+
+    /// <summary>The diegetic read of the leap: a purple tether drawn from your chest to the
+    /// Core while you're within reach — brighter, with purple chips at your boots, while a
+    /// jump press would carry you there (purple = the suit can use this).</summary>
+    private void CoreTether(float dt)
+    {
+        tetherT -= dt;
+        if (tetherT > 0f || !WardenHazard.Alive || !CoreInRange()) return;
+        tetherT = 0.15f;
+        var armed = CoreLeapArmed();
+        var col = WardenFx.PurpleBright;
+        col.a = armed ? 1f : 0.45f;
+        WardenFx.Stroke(WardenHazard.Chest, body.CorePosition, col, armed ? 0.07f : 0.035f, 0.22f, 0.4f);
+        if (armed) WardenFx.Chips(WardenHazard.Feet + Vector3.up * 0.1f, 3, 1.2f, Vector3.up * 0.4f, 0.35f, WardenFx.Purple, 1f);
     }
 
     /// <summary>Already airborne beside the Core (a double jump from below) — an
@@ -2197,7 +2446,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     }
 
     /// <summary>Purple gathers at the boots and the suit carries you up to the Core;
-    /// you hang there a breath — attack to strike, or fall.</summary>
+    /// you hang there a breath — an attack or jump press strikes at once, and the end
+    /// of the hang strikes anyway: the leap is the committed choice.</summary>
     private IEnumerator CoreLeap()
     {
         coreStruck = false;
@@ -2226,20 +2476,20 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             pcc.Move(pos - pt.position);
             pt.rotation = Quaternion.LookRotation(toCore, Vector3.up);
             WardenFx.Shards(pt.position + Vector3.up * 0.2f, 1, 0.6f, WardenFx.Purple, false, 0.9f, 0.3f);
+            // Attack presses buffer through the flight (the jump that launched it doesn't count).
             pressed |= playerAttack != null && playerAttack.AttackAction != null && playerAttack.AttackAction.WasPressedThisFrame();
             yield return null;
         }
-        GameHud.ShowPrompt("LMB", "STRIKE THE CORE");
+        // The hang: the Core flaring is the read — no prompt. Any press strikes now.
         var hang = 0f;
-        while (hang < 0.75f && !pressed)
+        while (hang < 0.75f && !pressed && WardenHazard.Alive)
         {
             hang += Time.deltaTime;
-            pressed = playerAttack != null && playerAttack.AttackAction != null && playerAttack.AttackAction.WasPressedThisFrame();
+            pressed = StrikePressed();
             WardenFx.Shards(pt.position, 1, 0.4f, WardenFx.Purple, true, 0.9f, 0.4f);
             yield return null;
         }
-        GameHud.HidePrompt();
-        if (pressed)
+        if (WardenHazard.Alive)
         {
             coreStruck = true;
             yield break;
@@ -2248,12 +2498,16 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         playerLoco?.ResumeVerticalMotion(0f);
     }
 
+    private bool StrikePressed()
+        => (playerAttack != null && playerAttack.AttackAction != null && playerAttack.AttackAction.WasPressedThisFrame())
+           || (playerLoco != null && playerLoco.JumpAction != null && playerLoco.JumpAction.WasPressedThisFrame());
+
     /// <summary>The final strike: everything stops for a breath; impact frames; the
     /// Core bursts; he drops; the floating arena holds… then gravity returns.</summary>
     private IEnumerator CoreStrike()
     {
         WardenHazard.ClearAll();
-        GameHud.HidePrompt();
+        CorePrompt(false);
         var pt = WardenHazard.Player;
         var pcc = WardenHazard.Capsule;
         var st = WardenHazard.State;
@@ -2347,9 +2601,10 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
                     roared = revived = judgmentDone = true;
                     body.SplitChest();
                     body.GrabGreatsword();
+                    SyncSword();
                     SetBodySize(1.15f);
                     Sanctum?.Shatter(FloorPoint(transform.position));
-                    GameHud.Boss(health, displayName + " — FORSAKEN", finaleAt);
+                    GameHud.Boss(health, displayName, finaleAt);
                 }
                 health.Revive(finaleAt * 0.9f);
                 finalePending = true;
