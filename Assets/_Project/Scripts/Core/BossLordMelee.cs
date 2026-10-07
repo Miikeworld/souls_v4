@@ -44,12 +44,12 @@ public sealed partial class BossLord
     private bool hasMoveXY, hasSpeedParam;
     private Move queued;
     private readonly List<string> recent = new List<string>();
-    private Move guardMove, backstepMove, leapMove, volleyMove, rushP1, rushP2, rushP3;
+    private Move guardMove, rushP1, rushP2, rushP3;
 
     // ================================================================== tempo per phase
 
     private float Aggression => phase == 0 ? 0.8f : phase == 1 ? 1.05f : 1f;
-    private int MaxChain => phase == 0 ? 2 : phase == 1 ? 4 : 3;
+    private int MaxChain => phase == 0 ? 3 : phase == 1 ? 5 : 4;
     private float EarlyTurn => phase == 0 ? 420f : phase == 1 ? 540f : 280f;
     private float LateTurn => phase == 0 ? 75f : phase == 1 ? 110f : 50f;
 
@@ -166,7 +166,7 @@ public sealed partial class BossLord
         // --- Singles -------------------------------------------------------------------
         var heaven = C(HeavenCutId, "Heaven Cut", "heaven", 36f, 0.95f, new Vector2(0.4f, 0.52f));
         Heavy(heaven, 1.3f, 0.22f, 0.05f, 9f, 14f);
-        heaven.holdAtBase = 0.36f; heaven.hold = new Vector2(0.3f, 0.9f); heaven.release = 1.25f;
+        heaven.holdAtBase = 0.36f; heaven.hold = new Vector2(0.3f, 0.9f); heaven.release = 1.25f; heaven.trackAt = 0.34f;
         heaven.pickMin = 1.2f; heaven.pickMax = 5.4f; heaven.cooldown = 6f; heaven.warp = 2f * warpK;
 
         var bone = C(BonesunderId, "Bonesunder", "bone", 26f, 1.05f, new Vector2(0.16f, 0.28f));
@@ -225,8 +225,9 @@ public sealed partial class BossLord
         foreach (var m in new[] { rush, moon }) m.linkChance = 0.55f;
 
         // --- Utilities (scripted reads) ----------------------------------------------
-        var guard = new Move { name = "Revenge Guard", tag = "guard", seq = GuardCounter, utility = true, cooldown = 9f, pickMax = 4.6f, weight = 0.6f };
-        var backstep = new Move { name = "Backstep", tag = "step", seq = Backstep, utility = true, cooldown = 6f, pickMax = 2.6f, weight = 0.5f };
+        // Only with its own takes (Setup Warden Fight): a guard without the pose would read as standing idle.
+        var guard = new Move { name = "Revenge Guard", tag = "guard", seq = GuardCounter, utility = true, cooldown = 9f, pickMax = 4.6f, weight = 0.6f, requiresState = GuardLoopId };
+        var backstep = new Move { name = "Backstep", tag = "step", seq = Backstep, utility = true, cooldown = 6f, pickMax = 2.6f, weight = 0.5f, requiresState = BackStepId };
         var leap = new Move { name = "Leap Slam", tag = "leap", seq = LeapSlam, utility = true, gapCloser = true, cooldown = ph == 2 ? 8f : 10f, pickMin = 6f, pickMax = 18f, weight = 0.9f };
         var volley = new Move { name = "Blade Volley", tag = "volley", seq = BladeVolley, utility = true, gapCloser = true, cooldown = 9f, pickMin = 7f, pickMax = 26f, weight = 0.9f };
 
@@ -234,16 +235,15 @@ public sealed partial class BossLord
         {
             counter = counterCut;
             guardMove = guard;
-            backstepMove = backstep;
             rushP1 = rush;
             list.AddRange(new[] { s1, f1a, f1b, t1, w1, heaven, bone, gale, wolfAll, upper, rush, moon, guard, backstep });
         }
         else if (ph == 1)
         {
             rushP2 = rush;
-            list.AddRange(new[] { s1, f1a, f1b, t1, w1, heaven, bone, gale, ashen, wolfAll, upper, rush, moon, sky, guard, backstep, leap, volley });
-            leapMove = leap;
-            volleyMove = volley;
+            // The late seven cuts also open a string on their own, so the finisher shows up.
+            s6.pickMax = 5.4f; s6.cooldown = 6f; s6.weight = 0.6f;
+            list.AddRange(new[] { s1, s6, f1a, f1b, t1, w1, heaven, bone, gale, ashen, wolfAll, upper, rush, moon, sky, guard, backstep, leap, volley });
         }
         else
         {
@@ -255,13 +255,14 @@ public sealed partial class BossLord
             heavyCombo.warp = 2.4f;
             var heavySmash = C(HeavySmashId, "Heavy Smash", "heavy", 44f, 0.92f, new Vector2(0.5f, 0.72f));
             Heavy(heavySmash, 1.6f, 0.32f, 0.07f, 10f, 18f);
-            heavySmash.holdAtBase = 0.44f; heavySmash.hold = new Vector2(0.2f, 0.6f); heavySmash.release = 1.1f;
+            heavySmash.holdAtBase = 0.44f; heavySmash.hold = new Vector2(0.2f, 0.6f); heavySmash.release = 1.1f; heavySmash.trackAt = 0.42f;
             heavySmash.pickMin = 1.5f; heavySmash.pickMax = 6f; heavySmash.cooldown = 5f; heavySmash.warp = 3f;
             heavySweep.links = new[] { new Link(heavyCombo, 1f, 6f), new Link(heavySmash, 0.6f, 6.5f) };
             heavyCombo.links = new[] { new Link(heavySmash, 1f, 6.5f), new Link(rend, 0.4f, 6f) };
             heavySweep.linkAt = 0.72f; heavyCombo.linkAt = 0.82f;
             rushP3 = rush;
-            list.AddRange(new[] { heavySweep, heavySmash, s1, f1a, f1b, w1, heaven, bone, wolfAll, upper, rush, moon, sky, leap, volley });
+            s6.pickMax = 5.6f; s6.cooldown = 6f; s6.weight = 0.7f;
+            list.AddRange(new[] { heavySweep, heavySmash, s1, s6, f1a, f1b, w1, heaven, bone, wolfAll, upper, rush, moon, sky, leap, volley });
             leap.weight = 1.2f;
             volley.weight = 0.7f;
         }

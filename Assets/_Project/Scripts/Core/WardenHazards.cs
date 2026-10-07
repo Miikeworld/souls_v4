@@ -157,7 +157,14 @@ public sealed class WardenShove : MonoBehaviour
         var k1 = t / dur;
         // Ease-out: most of the push lands in the first frames.
         float E(float k) => 1f - (1f - k) * (1f - k);
-        cc.Move(total * (E(k1) - E(k0)));
+        var step = total * (E(k1) - E(k0));
+        // Never a ring-out: the push stops where the floor ends (broken sanctum edges, the causeway).
+        if (cc.isGrounded && !WardenHazard.FloorAt(transform.position + step * 1.5f + Vector3.up * 0.5f, 2f, out _))
+        {
+            enabled = false;
+            return;
+        }
+        cc.Move(step);
     }
 }
 

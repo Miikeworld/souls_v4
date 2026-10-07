@@ -243,7 +243,8 @@ internal static class ProjectRestartWardenDress
         for (var i = 0; i < 5; i++)
         {
             var d = Az(-60f + 30f * i);
-            Box(art, "SM_Prop_Candles_0" + (1 + rng.Next(4)), throne + new Vector3(d.x, 0f, -Mathf.Abs(d.y)) * 2.3f, new Vector3(float.NaN, 0.5f, float.NaN), rng.Next(360), Align.Bottom, false);
+            // On the floor just outside the dais (radius 2.4), facing the arena.
+            Box(art, "SM_Prop_Candles_0" + (1 + rng.Next(4)), throne + new Vector3(d.x, 0f, -Mathf.Abs(d.y)) * 2.8f, new Vector3(float.NaN, 0.5f, float.NaN), rng.Next(360), Align.Bottom, false);
         }
         // The sanctum's Core: kit gem spikes in Corestone crimson instead of the procedural cluster.
         if (crystal != null)

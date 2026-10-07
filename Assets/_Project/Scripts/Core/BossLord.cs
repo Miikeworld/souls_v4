@@ -53,7 +53,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         public float trackAt;
         public int win;
         public bool effectPlayed, struck, glinted, impacted, held;
-        public float sampledTime, nextRehit, holdUntil;
+        public float sampledTime, holdUntil;
         // Warden additions
         public System.Func<IEnumerator> seq;      // signature attack — runs as a coroutine
         public float maxHeight = 3f;               // melee only connects below this (low sweeps are jumpable)
@@ -62,13 +62,10 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         public float speed = 1f;                   // animator speed while it plays (P3 weight)
         public bool needsSanctum;
         public float reach = 0.55f;                // blade-sweep slack around the player's body
-        public float rehit;                        // >0: the blade may hit again this often inside a window (spins)
         public float force = 1f;                   // pillar strike weight of the swing
         public float holdAt = -1f;                 // anticipation hold: freeze here…
         public Vector2 hold;                       // …for a random time in this range (s)
         public float release = 1.2f;               // animator speed after the hold
-        public Move chain;                         // follow-up string (entered while you stay in chainRange)
-        public float chainRange;
         public string name = "";
         // Melee rework: strings, tracking, closing the gap.
         public Link[] links = System.Array.Empty<Link>();  // branches out of this cut (one is rolled at linkAt)
@@ -82,6 +79,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         public bool gapCloser, antiAir, turner, special, utility;
         public float holdAtBase = -1f;
         public int played;                         // the state actually playing (fallbacks included)
+        public int requiresState;                  // scripted read that only makes sense with this state present
         public bool linkRolled;
     }
 
@@ -727,7 +725,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
     private bool ReadyInBand(Move m, float dist)
         => Time.time >= m.nextAllowed && dist >= m.pickMin && dist <= PickReach(m) * 1.15f
-           && (!m.needsSanctum || Sanctum != null);
+           && (!m.needsSanctum || Sanctum != null)
+           && (m.requiresState == 0 || (bossAnimator != null && bossAnimator.HasState(0, m.requiresState)));
 
     private static float PickReach(Move m) => m.pickMax > 0f ? m.pickMax : m.range;
 
@@ -755,7 +754,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         m.struck = m.glinted = m.impacted = m.held = false;
         m.effectPlayed = false;
         m.sampledTime = 0f;
-        m.nextRehit = 0f;
         m.linkRolled = false;
         // Souls rhythm-breaker: some finishers hang a beat before they come down.
         m.holdAt = m.holdAtBase;
@@ -852,8 +850,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             }
             if (nt <= w.y)
             {
-                if (!m.struck || (m.rehit > 0f && Time.time >= m.nextRehit))
-                    if (BladeContact(m)) { m.struck = true; m.nextRehit = Time.time + m.rehit; }
+                if (!m.struck && BladeContact(m)) m.struck = true;
                 if (m.impact > 0f && !m.impacted && blade.FloorContactThisSwing)
                     StrikeImpact(m, blade.LastFloorContact);
                 break;
@@ -874,12 +871,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             {
                 chainDepth++;
                 EnterMove(next, chained: true);
-                return;
-            }
-            if (m.chain != null && PlayerDistance <= m.chainRange && chainDepth < MaxChain)
-            {
-                chainDepth++;
-                EnterMove(m.chain, chained: true);
                 return;
             }
         }

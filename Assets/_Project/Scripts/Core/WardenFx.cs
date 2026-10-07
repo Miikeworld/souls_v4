@@ -24,7 +24,8 @@ public sealed class WardenFx : MonoBehaviour
     public static Color Purple => CoreConduit.Main;
     public static Color PurpleBright => CoreConduit.Bright;
 
-    private const float InkStrength = 0.55f;
+    // Matches the player's softened traversal FX (TraversalEffects.inkStrength 0.45).
+    private const float InkStrength = 0.45f;
     private const float FreezeScale = 0.05f;
 
     private static WardenFx host;
