@@ -6,7 +6,7 @@ Mesh:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: Spear_2
+  m_Name: Warden arsenal Spear (SM_Wep_Ornate_Spear_01)
   serializedVersion: 12
   m_SubMeshes:
   - serializedVersion: 2
@@ -17,8 +17,8 @@ Mesh:
     firstVertex: 0
     vertexCount: 2730
     localAABB:
-      m_Center: {x: 0, y: 0.3486264, z: 0}
-      m_Extent: {x: 0.06773516, y: 0.6513736, z: 0.018678704}
+      m_Center: {x: 0, y: 0, z: 0}
+      m_Extent: {x: 0, y: 0, z: 0}
   m_Shapes:
     vertices: []
     shapes: []

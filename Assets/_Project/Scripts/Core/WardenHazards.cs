@@ -1433,7 +1433,12 @@ public sealed class FloodField : MonoBehaviour
                 WardenFx.Cracks(origin, 3, reach, WardenFx.Crimson, 0.2f, warn - t + burn * 0.5f + 0.4f);
                 // Elsewhere the floor answers with a crack (the sanctum stamps the warn's sigils).
                 if (sanctum != null && k > 0.35f)
-                    WardenFx.Cracks(sanctum.RandomFloorPoint(), 2, 2.5f, WardenFx.Crimson, 0.25f, warn - t + 0.6f);
+                {
+                    // Elsewhere the floor answers: a crack and a crimson Core sigil stamped in it.
+                    var at = sanctum.RandomFloorPoint();
+                    WardenFx.Cracks(at, 2, 2.5f, WardenFx.Crimson, 0.25f, warn - t + 0.6f);
+                    WardenFx.Stamp(at + Vector3.up * 0.04f, Vector3.up, Random.Range(0.45f, 0.75f), WardenFx.Crimson, 0.9f);
+                }
             }
             if (t >= warn)
             {

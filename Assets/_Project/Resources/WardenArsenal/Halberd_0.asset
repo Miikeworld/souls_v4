@@ -6,7 +6,7 @@ Mesh:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: Halberd_0
+  m_Name: Warden arsenal Halberd (SM_Wep_Halberd_06)
   serializedVersion: 12
   m_SubMeshes:
   - serializedVersion: 2
@@ -17,8 +17,8 @@ Mesh:
     firstVertex: 0
     vertexCount: 1344
     localAABB:
-      m_Center: {x: 0, y: 0.4318182, z: -0.0000000037252903}
-      m_Extent: {x: 0.2007375, y: 0.5681818, z: 0.037984267}
+      m_Center: {x: 0, y: 0, z: 0}
+      m_Extent: {x: 0, y: 0, z: 0}
   m_Shapes:
     vertices: []
     shapes: []
