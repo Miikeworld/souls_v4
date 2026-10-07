@@ -41,10 +41,17 @@ public sealed partial class BossLord
 
     private float nextAttackAt, nextSpecialAt, outOfReach, strafeUntil, warpLeft, pressure, moveX, moveY;
     private int strafeSign = 1, chainDepth;
-    private bool hasMoveXY, hasSpeedParam;
-    private Move queued;
+    private bool hasMoveXY, hasSpeedParam, meleeParamsRead;
+    private Move queued, dashCut;
     private readonly List<string> recent = new List<string>();
     private Move guardMove, rushP1, rushP2, rushP3;
+    private Coroutine ghostChain;
+    private Transform ghostSword;
+    private MeshFilter ghostSwordMesh;
+
+    /// <summary>The player's flat dust chip (.4,.36,.34 at a .55) — pre-divided by
+    /// WardenFx.Chips' ×1.28 glow so the chips land on the player's colour.</summary>
+    private static readonly Color DustChip = new Color(0.31f, 0.28f, 0.27f, 0.55f);
 
     // ================================================================== tempo per phase
 
@@ -63,15 +70,22 @@ public sealed partial class BossLord
 
     private float SpecialGap() => phase == 1 ? Random.Range(7f, 11f) : Random.Range(6f, 9.5f);
 
+    /// <summary>Which locomotion parameters the controller has. Idempotent — Start and
+    /// Engage both call it: the Animator sits on a child, so during the parent's Awake
+    /// it may not be initialized yet, and an empty read would leave him sliding in the
+    /// idle pose with no strafe or run. Reads once from an initialized Animator.</summary>
     private void InitMelee()
     {
+        if (meleeParamsRead || bossAnimator == null || bossAnimator.runtimeAnimatorController == null
+            || !bossAnimator.isInitialized) return;
         hasMoveXY = hasSpeedParam = false;
-        if (bossAnimator == null || bossAnimator.runtimeAnimatorController == null) return;
-        foreach (var p in bossAnimator.parameters)
+        var ps = bossAnimator.parameters;
+        foreach (var p in ps)
         {
             if (p.nameHash == MoveXId) hasMoveXY = true;
             if (p.nameHash == SpeedId) hasSpeedParam = true;
         }
+        meleeParamsRead = ps.Length > 0;
     }
 
     private void ResetMelee()
@@ -79,7 +93,7 @@ public sealed partial class BossLord
         nextAttackAt = nextSpecialAt = 0f;
         outOfReach = strafeUntil = warpLeft = pressure = 0f;
         chainDepth = 0;
-        queued = null;
+        queued = dashCut = null;
         recent.Clear();
         ZeroMove();
     }
@@ -188,13 +202,16 @@ public sealed partial class BossLord
         var rush = C(RushDrawId, "Rush Draw", "rush", 28f, 1.05f, new Vector2(0.3f, 0.62f));
         rush.gapCloser = true; rush.pickMin = 4.2f; rush.pickMax = 13f; rush.cooldown = 3.8f; rush.warp = 7.5f * warpK; rush.warpStop = 1.3f;
 
+        // Skill_J / Skill_I are authored leaps: rootY keeps their arc (the rest stay grounded).
         var moon = C(MoonRushId, "Mooncleaver", "moon", 34f, 1f, new Vector2(0.38f, 0.49f));
         Heavy(moon, 1.2f, 0.2f, 0.05f, 9f, 14f);
         moon.gapCloser = true; moon.pickMin = 4.5f; moon.pickMax = 13f; moon.cooldown = 6.5f; moon.warp = 6.5f * warpK; moon.warpStop = 1.4f;
+        moon.rootY = true;
 
         var sky = C(SkyfallId, "Skyfall", "skyfall", 32f, 1f, new Vector2(0.42f, 0.57f));
         Heavy(sky, 1.3f, 0.22f, 0.05f, 9f, 14f);
         sky.gapCloser = true; sky.pickMin = 3.5f; sky.pickMax = 10f; sky.cooldown = 6.5f; sky.warp = 5f * warpK; sky.warpStop = 1.3f;
+        sky.rootY = true;
 
         var counterCut = C(GuardAttackId, "Revenge", "counter", 30f, 1.1f, new Vector2(0.1f, 0.56f));
         counterCut.arc = 200f; counterCut.warp = 3f; counterCut.warpStop = 1.3f;
@@ -349,16 +366,28 @@ public sealed partial class BossLord
         var dist = PlayerDistance;
         var total = 0f;
         foreach (var l in m.links)
-            if (l.to != null && dist <= l.maxDist && dist >= l.minDist) total += l.weight * (l.to.special ? 0f : 1f);
+            if (LinkOpen(m, l, dist)) total += l.weight;
         if (total <= 0f) return null;
         var roll = Random.value * total;
         foreach (var l in m.links)
         {
-            if (l.to == null || dist > l.maxDist || dist < l.minDist || l.to.special) continue;
+            if (!LinkOpen(m, l, dist)) continue;
             roll -= l.weight;
             if (roll <= 0f) return l.to;
         }
         return null;
+    }
+
+    /// <summary>A branch is open while you're in its distance band — and only when it
+    /// plays a DIFFERENT take than the one running: a follow-up whose state (fallbacks
+    /// included) resolves to the state already playing would restart that clip, and
+    /// TickAttack would read the outgoing instance's time (windows spent, string ended).
+    /// Branches with no playable state at all are closed too.</summary>
+    private bool LinkOpen(Move m, Link l, float dist)
+    {
+        if (l.to == null || l.to.special || dist > l.maxDist || dist < l.minDist) return false;
+        var state = ResolvedState(l.to.id);
+        return state != 0 && state != m.played;
     }
 
     // ================================================================== moving between strings
@@ -483,9 +512,86 @@ public sealed partial class BossLord
         if (need <= 0.05f || Vector3.Angle(transform.forward, dir) > 65f) return;
         var v = Mathf.Min(need / Mathf.Max(0.1f, secondsToStrike), maxWarpSpeed);
         var stepLen = Mathf.Min(v * dt, warpLeft, need);
+        // The dash read, once per cut and only when the closing travel really is a dash:
+        // the player's sprint-start streak off both boots + an afterimage chain (one baked
+        // pose every ~1.2 m he covers, at most 4) — never a per-frame puff.
+        if (warpLeft >= m.warp - 1e-4f) dashCut = null;   // first closing step of this cut
+        if (dashCut != m && v >= 4f && Mathf.Min(need, warpLeft) >= 1.2f)
+        {
+            dashCut = m;
+            KickBoots(-dir, 5, 2.4f, 0.16f, WardenFx.CrimsonDeep, 1f);
+            GhostChain(4, 1.2f, Mathf.Clamp(secondsToStrike + 0.15f, 0.3f, 0.8f));
+        }
         MoveFlat(dir * stepLen);
         warpLeft -= stepLen;
-        if (stepLen > 0.05f && Random.value < 0.3f) WardenFx.Dust(transform.position, 1, 0.5f, 0.6f);
+    }
+
+    // ================================================================== afterimages / boot kicks
+
+    /// <summary>The player's dodge afterimage chain on his body (and the blade in his hand):
+    /// one baked pose now, then one every <paramref name="spacing"/> metres he covers (3D,
+    /// so a leap's rise counts; slow travel falls back to a 0.1 s cadence), at most
+    /// <paramref name="count"/>, for at most <paramref name="maxAge"/> s. A new chain
+    /// replaces a running one; StopAllCoroutines (resets, posture breaks) ends it.</summary>
+    private void GhostChain(int count, float spacing, float maxAge)
+    {
+        if (count <= 0 || !isActiveAndEnabled) return;
+        if (ghostChain != null) StopCoroutine(ghostChain);
+        ghostChain = StartCoroutine(RunGhostChain(count, Mathf.Max(0.2f, spacing), maxAge));
+    }
+
+    private IEnumerator RunGhostChain(int count, float spacing, float maxAge)
+    {
+        DropGhost();
+        var left = count - 1;
+        var last = transform.position;
+        var age = 0f;
+        var clock = 0f;
+        while (left > 0)
+        {
+            yield return null;
+            age += Time.deltaTime;
+            clock += Time.deltaTime;
+            if (age > maxAge || health.IsDead) break;
+            var d = Vector3.Distance(transform.position, last);
+            if (d < spacing && (clock < 0.1f || d < spacing * 0.4f)) continue;
+            DropGhost();
+            left--;
+            last = transform.position;
+            clock = 0f;
+        }
+        ghostChain = null;
+    }
+
+    private void DropGhost()
+    {
+        const float life = 0.42f;
+        WardenFx.Ghost(BodySkin, WardenFx.Crimson, life);
+        // The blade rides along in the afterimage — only while it is really seated in his hand.
+        if (blade == null || !blade.HasBlade) return;
+        var s = body != null ? body.HandSword : null;
+        if (s != ghostSword)
+        {
+            ghostSword = s;
+            ghostSwordMesh = s != null ? s.GetComponentInChildren<MeshFilter>() : null;
+        }
+        WardenFx.Ghost(ghostSwordMesh, WardenFx.Crimson, life);
+    }
+
+    /// <summary>Chips kicked off both boots (the player's sprint-start streak / takeoff).</summary>
+    private void KickBoots(Vector3 bias, int count, float speed, float life, Color col, float size = 1f)
+    {
+        for (var i = 0; i < 2; i++) WardenFx.Chips(Boot(i), count, speed, bias, life, col, size);
+    }
+
+    private Vector3 Boot(int side)
+    {
+        if (bossAnimator != null && bossAnimator.isHuman)
+        {
+            var b = bossAnimator.GetBoneTransform(side == 0 ? HumanBodyBones.LeftFoot : HumanBodyBones.RightFoot);
+            if (b != null) return b.position;
+        }
+        return FloorPoint(transform.position) + FlatDir(transform.right) * (side == 0 ? -0.25f : 0.25f) + Vector3.up * 0.08f;
     }
 
     // ================================================================== scripted reads
@@ -497,13 +603,24 @@ public sealed partial class BossLord
         var id = Play(DrawIntroId, 0.2f, 1.15f);
         WardenAudio.Play("armour", Chest, 0.5f, 0.9f);
         var t = 0f;
-        var glinted = false;
+        bool forged = false, glinted = false;
         while (t < 1.25f)
         {
             t += Time.deltaTime;
             Face(ToPlayerFlat, Time.deltaTime, 220f);
             blade.Heat = Mathf.Clamp01(t / 0.9f);
-            if (!glinted && t >= 0.75f) { glinted = true; blade.Glint(1.4f); WardenFx.Dust(transform.position, 4, 1.2f, 0.9f); }
+            // The player's weapon forge: Core chips gathering onto the edge as it heats.
+            if (!forged && t >= 0.25f && blade.HasBlade)
+            {
+                forged = true;
+                WardenFx.Converge(Vector3.Lerp(blade.Base, blade.Tip, 0.55f), 12, 0.9f, 0.35f, WardenFx.Crimson);
+            }
+            if (!glinted && t >= 0.75f)
+            {
+                glinted = true;
+                blade.Glint(1.4f);
+                KickBoots(Vector3.up * 0.35f, 3, 1.4f, 0.4f, DustChip, 1.5f);
+            }
             if (id != 0 && StateTime(id) >= 0.9f) break;
             yield return null;
         }
@@ -529,7 +646,7 @@ public sealed partial class BossLord
             Face(ToPlayerFlat, Time.deltaTime, 260f);
             var front = PlayerInFront(100f);
             health.Invulnerable = front;
-            blade.Heat = 0.35f + 0.15f * Mathf.Sin(t * 9f);
+            blade.Heat = 0.35f + 0.15f * WardenFx.Stepped(Mathf.PingPong(t * 2.8f, 1f));   // stepped breath, never a sine flicker
             if (front && playerAttack != null && playerAttack.InHitWindow && PlayerDistance < 4.4f) { parried = true; break; }
             yield return null;
         }
@@ -537,9 +654,10 @@ public sealed partial class BossLord
         if (parried)
         {
             var at = blade.HasBlade ? Vector3.Lerp(blade.Base, blade.Tip, 0.6f) : Chest + transform.forward * 0.6f;
-            WardenFx.Sparks(at, transform.forward, 14, 6f);
-            WardenFx.Spikes(at, 8, 0.9f, WardenFx.PaleRed, 0.18f, 0.07f);
-            WardenFx.Peak(at, 0.5f);
+            // Steel on steel: the player's impact star in the pale-red peak + the contact sparks.
+            var deflect = FlatDir(transform.forward) + Vector3.up * 0.35f;
+            WardenFx.Star(at, WardenFx.PaleRed, deflect, 1.6f);
+            HitFx.Spawn(at, deflect, 1.2f, WardenFx.PaleRed);
             WardenAudio.Play("metal", at, 1f, 1.15f);
             WardenAudio.Play("shing", at, 0.7f, 0.9f);
             WardenFx.HitStop(0.07f);
@@ -588,7 +706,13 @@ public sealed partial class BossLord
     private IEnumerator Backstep()
     {
         Play(BackStepId, 0.08f, 1.2f);
-        WardenFx.Dust(transform.position, 4, 1f, 0.8f);
+        // The player's dodge push-off: a ring tap + chips thrown against the travel, then the afterimages.
+        var forward = FlatDir(transform.forward);
+        var p = FloorPoint(transform.position) + Vector3.up * 0.04f;
+        WardenFx.Pulse(p, Vector3.up, 0.2f, 0.9f, 0.28f, WardenFx.Crimson, 1f);
+        WardenFx.Chips(p, 6, 2.2f, forward * 0.8f + Vector3.up * 0.2f, 0.3f, WardenFx.Crimson, 0.9f);
+        WardenFx.Chips(p, 3, 1.5f, forward * 0.6f, 0.3f, WardenFx.CrimsonDeep, 1f);
+        GhostChain(3, 1.1f, 0.5f);
         WardenAudio.Play("swish", Chest, 0.5f, 1.2f);
         seqMotion = true;
         var t = 0f;
@@ -603,11 +727,16 @@ public sealed partial class BossLord
             yield return null;
         }
         seqMotion = false;
+        WardenFx.Pulse(FloorPoint(transform.position) + Vector3.up * 0.04f, Vector3.up, 0.15f, 0.55f, 0.22f, WardenFx.Crimson, 0.8f);   // brake skid
         yield return Wait(0.12f, 300f);
         var rush = phase == 0 ? rushP1 : phase == 1 ? rushP2 : rushP3;
         if (rush != null && Random.value < 0.65f) queued = rush;
-        else if (Random.value < 0.5f && guardMove != null && phase < 2) queued = guardMove;
+        else if (Random.value < 0.5f && guardMove != null && phase < 2 && StateReady(guardMove)) queued = guardMove;
     }
+
+    /// <summary>A queued read skips the picker's band checks — still never without its takes.</summary>
+    private bool StateReady(Move m)
+        => m.requiresState == 0 || (bossAnimator != null && bossAnimator.HasState(0, m.requiresState));
 
     /// <summary>The leap slam: a crouch while a crimson circle opens where you'll be,
     /// then a heavy arc through the air — he follows you for the first half — and
@@ -619,9 +748,9 @@ public sealed partial class BossLord
         body.Beat(0.8f);
         blade.Glint(1.2f);
         WardenAudio.Play("armour", Chest, 0.5f, 0.85f);
-        WardenFx.Dust(transform.position, 5, 1.2f, 0.9f);
+        KickBoots(Vector3.up * 0.3f, 3, 1f, 0.3f, DustChip, 1.2f);
         var radius = phase == 2 ? 3.2f : 2.6f;
-        var mark = WardenMark.Circle(target, radius, WardenFx.Crimson, 0.09f, 0.1f, 32);
+        var mark = WardenMark.Circle(target, radius, WardenFx.Crimson, 0.09f, 0.1f, WardenFx.RingSides);
         var t = 0f;
         while (t < 0.34f)
         {
@@ -640,11 +769,18 @@ public sealed partial class BossLord
         IgnorePlayer(true);
         Play(LeapAirId, 0.08f, 1f);
         WardenAudio.Play("whoom", Chest, 0.8f, 1.3f);
-        WardenFx.Dust(from, 6, 1.6f, 1.1f);
-        WardenFx.Debris(from, 4, 3f, 0.8f);
         var dist0 = Vector3.ProjectOnPlane(target - from, Vector3.up).magnitude;
         var T = 0.62f + dist0 * 0.022f;
         var apex = 3.2f + dist0 * 0.18f;
+        // Takeoff, the player's way: a compressed ring + chips under each boot, then the
+        // afterimages trailing the rise.
+        for (var i = 0; i < 2; i++)
+        {
+            var at = FloorPoint(Boot(i)) + Vector3.up * 0.03f;
+            WardenFx.Pulse(at, Vector3.up, 0.08f, 0.5f, 0.24f, WardenFx.Crimson, 0.9f);
+            WardenFx.Chips(at, 5, 1.8f, Vector3.up * 0.3f, 0.3f, WardenFx.CrimsonDeep, 0.9f);
+        }
+        GhostChain(3, 1.8f, T * 0.5f);
         var slammed = false;
         t = 0f;
         while (t < T)
@@ -676,7 +812,21 @@ public sealed partial class BossLord
         // Never left standing on your head: whatever the hit did, you end up beside him.
         if (PlayerDistance < (cc != null ? cc.radius * transform.lossyScale.x : 0.5f) + 0.9f) WardenHazard.Shove(land, 1.4f, 0.15f);
         var heavy = phase == 2;
-        WardenFx.Impact(land, heavy ? 2f : 1.5f, heavy ? 0.4f : 0.26f, 0.06f, 10, 1.4f, 1f);
+        // The player's hard landing at his scale: pale-red 2-frame peak, a Core sigil stamped
+        // under the blade, white + crimson 12-gon rings opening to the danger radius, chips
+        // and dust chips, red Core cracks. Shake/hitstop land on contact.
+        var s = heavy ? 1.6f : 1.3f;
+        var g = land + Vector3.up * 0.04f;
+        WardenFx.Peak(land + Vector3.up * 0.6f, 0.5f * s);
+        WardenFx.Stamp(g, Vector3.up, 0.6f * s, WardenFx.Crimson, 1.3f);
+        WardenFx.Pulse(g, Vector3.up, 0.1f, 1.1f * s, 0.28f, Color.white, 1.1f);
+        WardenFx.Pulse(g, Vector3.up, 0.25f, radius, 0.5f, WardenFx.Crimson, 1.5f);
+        WardenFx.Pulse(g + Vector3.up * 0.06f, Vector3.up, 0.15f, 1.3f * s, 0.38f, WardenFx.Crimson, 1f, WardenFx.CoreSides);
+        WardenFx.Chips(g, Mathf.RoundToInt(18 * s), 4.2f, Vector3.up * 0.25f, 0.35f, WardenFx.Crimson, 1.1f);
+        WardenFx.Chips(g, Mathf.RoundToInt(10 * s), 1.4f, Vector3.up * 0.35f, 0.85f, DustChip, 2.6f);
+        WardenFx.Cracks(land, heavy ? 6 : 5, 1.6f * s, WardenFx.Crimson, 0.16f, 1.2f);
+        WardenFx.Shake(heavy ? 0.4f : 0.26f);
+        WardenFx.HitStop(0.06f);
         WardenAudio.Play("slam", land, 1f, 0.8f);
         if (heavy) WardenAudio.Play("sub", land, 0.9f, 1f);
         Sanctum?.StrikeRadius(land, radius + 1f, 1.2f);

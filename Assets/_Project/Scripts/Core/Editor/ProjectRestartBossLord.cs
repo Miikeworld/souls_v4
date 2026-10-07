@@ -27,7 +27,6 @@ public static class ProjectRestartBossLord
     private const string CapePrefabPath = AttachDir + "/SM_Chr_Attach_DarkLord_Cape_01.prefab";
     private const string WeaponPrefabPath =
         "Assets/ThirdParty/Synty/PolygonDungeon/Prefabs/Weapons/SM_Wep_Ornate_Sword_01.prefab";
-    private const string FxDir = "Assets/ThirdParty/Synty/PolygonFantasyRivals/Prefabs/FX";
 
     private const string NRoot = "Assets/ThirdParty/NinjaAnimset/Animation/Humanoid/";
     private const string MkRoot = "Assets/ThirdParty/MagicalKnightSet/Animation/Humanoid/";
@@ -46,11 +45,14 @@ public static class ProjectRestartBossLord
         }
         ProjectRestartUrpFix.FixAll();
         var controller = BuildController();
+        AssetDatabase.SaveAssets();
+        CheckController(controller);
         var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         if (scene.path != ScenePath)
             scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
 
         var boss = EnsureLord(controller);
+        Debug.Log("[ProjectRestart] " + ReseatHandSword(boss, controller));
         EnsureArena();
         EnsureGate(boss);
 
@@ -276,7 +278,67 @@ public static class ProjectRestartBossLord
         S("CastFlick", LoadClip(MkRoot + "atk_energy09_start.fbx", "atk_energy09_start"), 3600, 0, 1.4f);
     }
 
+    /// <summary>The Warden's sword states (BossLordMelee strings, reads, the leap, the draw,
+    /// P3's heavy string) — a controller missing them falls back to a handful of takes.</summary>
+    private static readonly string[] MeleeStates =
+    {
+        "DrawSlash", "TwinCut", "TwinCut2", "HeavenCut", "RushDraw", "WolfFang", "Bonesunder", "CounterCleave",
+        "SevenCut5", "SevenCut6", "SevenCut7", "FourCut1A", "FourCut1B", "FourCut2", "FourCut3", "FourCut4",
+        "ThreeCut1", "ThreeCut2", "ThreeCut3", "AshenCleave", "WolfFang1", "WolfFang2", "GraveRend", "Skyfall",
+        "MoonRush", "UpperCut", "GuardStart", "GuardLoop", "GuardAccept", "GuardAttack", "GuardEnd",
+        "BackStep", "SideStepL", "SideStepR", "LeapRise", "LeapAir", "LeapSlam", "LeapLand", "DrawIntro",
+        "HeavySweep", "HeavyCombo", "HeavySmash",
+    };
+
+    /// <summary>Logs how many of the Warden's melee states the rebuilt controller carries
+    /// (and whether they have clips / the 2D locomotion parameters exist), so a stale
+    /// controller is obvious in the console. Returns the line.</summary>
+    internal static string CheckController(AnimatorController controller)
+    {
+        if (controller == null) { Debug.LogError("[ProjectRestart] BossLordBase.controller self-check: no controller."); return "BossLordBase.controller missing"; }
+        var states = new System.Collections.Generic.Dictionary<string, AnimatorState>();
+        foreach (var s in controller.layers[0].stateMachine.states) states[s.state.name] = s.state;
+        var missing = new System.Collections.Generic.List<string>();
+        var clipless = 0;
+        foreach (var n in MeleeStates)
+            if (!states.TryGetValue(n, out var st)) missing.Add(n);
+            else if (st.motion == null) clipless++;
+        bool hasX = false, hasY = false;
+        foreach (var p in controller.parameters) { hasX |= p.name == "MoveX"; hasY |= p.name == "MoveY"; }
+        var line = $"BossLordBase.controller self-check: {MeleeStates.Length - missing.Count}/{MeleeStates.Length} Warden melee states present" +
+                   $" ({clipless} without a clip), {states.Count} states total, MoveX/MoveY {(hasX && hasY ? "ok" : "MISSING")}" +
+                   (missing.Count > 0 ? " — missing: " + string.Join(", ", missing) : "") + ".";
+        if (missing.Count > 0 || clipless > 0 || !hasX || !hasY) Debug.LogWarning("[ProjectRestart] " + line + " Stale controller — check the clip warnings above.", controller);
+        else Debug.Log("[ProjectRestart] " + line, controller);
+        return line;
+    }
+
     // ---------- scene ----------
+
+    /// <summary>Re-seats the scene's hand sword (the boss Animator's RightHand/BossSword) through
+    /// <see cref="WardenBody.ReseatSword"/> — the old FitSword parked it ~170 m off the hand, so
+    /// he swung an empty fist. Undoable; marks the scene dirty when it moves it. Returns a log line.</summary>
+    internal static string ReseatHandSword(BossLord boss, AnimatorController controller = null)
+    {
+        if (boss == null) return "Hand sword: no BossLord.";
+        var anim = new SerializedObject(boss).FindProperty("bossAnimator")?.objectReferenceValue as Animator;
+        if (anim == null) anim = boss.GetComponentInChildren<Animator>();
+        if (anim == null || !anim.isHuman) return "Hand sword: no humanoid boss Animator — reseat skipped.";
+        if (controller != null && anim.runtimeAnimatorController != controller)
+            Debug.LogWarning($"[ProjectRestart] {anim.name} plays {(anim.runtimeAnimatorController != null ? anim.runtimeAnimatorController.name : "no controller")}, not BossLordBase — " +
+                             "the rebuilt Warden states won't reach him. Run Setup Dark Lord Boss.", anim);
+        var hand = anim.GetBoneTransform(HumanBodyBones.RightHand);
+        var sword = hand != null ? FindDeep(hand, "BossSword") : null;
+        if (sword == null) return $"Hand sword: no BossSword under {(hand != null ? hand.name : "the right hand")} — nothing to reseat.";
+        var before = Vector3.Distance(sword.position, hand.position);
+        Undo.RecordObject(sword, "Reseat Warden sword");
+        if (!WardenBody.ReseatSword(anim, sword)) return $"Hand sword: BossSword already in the fist ({before:F3} m from {hand.name}).";
+        if (PrefabUtility.IsPartOfPrefabInstance(sword)) PrefabUtility.RecordPrefabInstancePropertyModifications(sword);
+        EditorUtility.SetDirty(sword);
+        EditorSceneManager.MarkSceneDirty(sword.gameObject.scene);
+        return $"Hand sword: BossSword reseated {before:F1} m -> {Vector3.Distance(sword.position, hand.position):F3} m from {hand.name} " +
+               $"(local {sword.localPosition.ToString("F6")}). BossVisual.prefab keeps its old seat until Boss Polish 6 refits it.";
+    }
 
     private static BossLord EnsureLord(AnimatorController controller)
     {
@@ -316,10 +378,6 @@ public static class ProjectRestartBossLord
                 var cso = new SerializedObject(boss);
                 var cp = cso.FindProperty("bossAnimator");
                 if (cp != null) cp.objectReferenceValue = customAnim;
-                WriteCue(cso.FindProperty("roarFx"), "Fire_Circle_FX", "root", new Vector3(0f, 0.5f, 0f), 1.6f, 5, 3f);
-                WriteCue(cso.FindProperty("slamFx"), "Fire_Circle_FX", "root", Vector3.zero, 2f, 1, 2.5f);
-                WriteCue(cso.FindProperty("reviveFx"), "EnergyPull_FX", "body", new Vector3(0f, 1.2f, 0f), 2f, 5, 3.5f);
-                WriteCue(cso.FindProperty("teleportFx"), "EnergyPush_FX", "root", Vector3.zero, 1.4f, 1, 2f);
                 cso.ApplyModifiedPropertiesWithoutUndo();
                 EditorUtility.SetDirty(boss.gameObject);
                 return boss;
@@ -371,10 +429,6 @@ public static class ProjectRestartBossLord
         var so = new SerializedObject(boss);
         var animProp = so.FindProperty("bossAnimator");
         if (animProp != null) animProp.objectReferenceValue = animator;
-        WriteCue(so.FindProperty("roarFx"), "Fire_Circle_FX", "root", new Vector3(0f, 0.5f, 0f), 1.6f, 5, 3f);
-        WriteCue(so.FindProperty("slamFx"), "Fire_Circle_FX", "root", Vector3.zero, 2f, 1, 2.5f);
-        WriteCue(so.FindProperty("reviveFx"), "EnergyPull_FX", "body", new Vector3(0f, 1.2f, 0f), 2f, 5, 3.5f);
-        WriteCue(so.FindProperty("teleportFx"), "EnergyPush_FX", "root", Vector3.zero, 1.4f, 1, 2f);
         so.ApplyModifiedPropertiesWithoutUndo();
         EditorUtility.SetDirty(boss.gameObject);
         return boss;
@@ -479,24 +533,6 @@ public static class ProjectRestartBossLord
         item.transform.localPosition = Vector3.zero;
         item.transform.localRotation = Quaternion.identity;
         item.transform.localScale = Vector3.one;
-    }
-
-    private static void WriteCue(SerializedProperty cue, string prefabName, string attach,
-                                 Vector3 offset, float scale, int palette, float life)
-    {
-        if (cue == null) return;
-        var prefab = AssetDatabase.LoadAssetAtPath<GameObject>($"{FxDir}/{prefabName}.prefab");
-        if (prefab == null)
-        {
-            Debug.LogWarning("[ProjectRestart] FX prefab missing: " + prefabName + " �X cue left empty.");
-            return;
-        }
-        cue.FindPropertyRelative("prefab").objectReferenceValue = prefab;
-        cue.FindPropertyRelative("attach").stringValue = attach;
-        cue.FindPropertyRelative("offset").vector3Value = offset;
-        cue.FindPropertyRelative("scale").floatValue = scale;
-        cue.FindPropertyRelative("palette").intValue = palette;
-        cue.FindPropertyRelative("life").floatValue = life;
     }
 
     private static Bounds CalcBounds(GameObject visual)
@@ -865,12 +901,17 @@ public static class BossRigRepair
   var smr=anim.GetComponentInChildren<SkinnedMeshRenderer>();
   if(!hand||!fore||!smr)return "sword fit skipped (hand/forearm/skin missing)";
   var forward=(hand.position-fore.position).normalized;
-  // Hand vertices in world space at the rest pose.
+  // Hand vertices in world space at the rest pose. BakeMesh(useScale: false) already gives world-size
+  // vertices in the renderer's position+rotation frame: map them WITHOUT its scale — TransformPoint
+  // applied the renderer's ×100 a second time and parked the sword ~170 m off the hand.
   var baked=new Mesh();smr.BakeMesh(baked);var bv=baked.vertices;var bw=smr.sharedMesh.boneWeights;Object.DestroyImmediate(baked);
+  var toWorld=Matrix4x4.TRS(smr.transform.position,smr.transform.rotation,Vector3.one);
   int hi=System.Array.IndexOf(smr.bones,hand);
   var pts=new System.Collections.Generic.List<Vector3>();
-  if(hi>=0)for(int i=0;i<bv.Length&&i<bw.Length;i++){var b=bw[i];float wt=b.boneIndex0==hi?b.weight0:b.boneIndex1==hi?b.weight1:b.boneIndex2==hi?b.weight2:b.boneIndex3==hi?b.weight3:0f;if(wt>=.5f)pts.Add(smr.transform.TransformPoint(bv[i]));}
-  var fist=hand.position+forward*.06f*anim.transform.lossyScale.x;
+  if(hi>=0)for(int i=0;i<bv.Length&&i<bw.Length;i++){var b=bw[i];float wt=b.boneIndex0==hi?b.weight0:b.boneIndex1==hi?b.weight1:b.boneIndex2==hi?b.weight2:b.boneIndex3==hi?b.weight3:0f;if(wt>=.5f)pts.Add(toWorld.MultiplyPoint3x4(bv[i]));}
+  float scale=anim.transform.lossyScale.x;
+  var fallback=hand.position+forward*.06f*scale;
+  var fist=fallback;
   var across=Vector3.Cross(forward,Vector3.up);
   if(pts.Count>=8)
   {
@@ -881,6 +922,9 @@ public static class BossRigRepair
    float ang=.5f*Mathf.Atan2(2f*bxy,a-cc); // major axis angle in (e1,e2)
    across=(Mathf.Cos(ang)*e1+Mathf.Sin(ang)*e2).normalized;
   }
+  // Sanity: the fist is a few cm past the wrist. Anything further is a bad measurement — never seat it.
+  bool guarded=Vector3.Distance(fist,hand.position)>.3f*scale;
+  if(guarded){Debug.LogError($"[BossPolish] Measured fist {Vector3.Distance(fist,hand.position):F2} m from {hand.name} (limit {.3f*scale:F2} m) — seating just past the wrist instead.",sword);fist=fallback;}
   // Thumb side faces the character's forward in a rest/T pose — blade tip goes that way.
   if(Vector3.Dot(across,anim.transform.forward)<0f)across=-across;
   var edge=Vector3.ProjectOnPlane(forward,across).normalized;
@@ -889,7 +933,7 @@ public static class BossRigRepair
   var widthLocal=sb.size.x>=sb.size.z?Vector3.right:Vector3.forward;
   sword.rotation=Quaternion.LookRotation(across,edge)*Quaternion.Inverse(Quaternion.LookRotation(Vector3.up,widthLocal));
   sword.position=fist;
-  return $"sword seated in {hand.name}: {pts.Count} hand verts, local pos {sword.localPosition:F3}, rot {sword.localEulerAngles:F0}";
+  return $"sword seated in {hand.name}: {pts.Count} hand verts{(guarded?" (GUARD: wrist fallback)":"")}, {Vector3.Distance(sword.position,hand.position):F3} m from the hand, local pos {sword.localPosition:F6}, rot {sword.localEulerAngles:F0}";
  }
 }
 
