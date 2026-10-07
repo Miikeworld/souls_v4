@@ -45,7 +45,8 @@ public sealed partial class BossLord
         var blades = new SpectralBlade[count];
         for (var i = 0; i < blades.Length; i++)
         {
-            var kind = !ten ? ArsenalKind.Sword : i % 3 == 1 ? ArsenalKind.Axe : i % 5 == 4 ? ArsenalKind.Greatsword : ArsenalKind.Sword;
+            // Six copies of his own blade; the ten-crown mixes in the arena's dead: axes, greatswords, swords.
+            var kind = !ten ? ArsenalKind.Own : i % 3 == 1 ? ArsenalKind.Axe : i % 5 == 4 ? ArsenalKind.Greatsword : i % 2 == 0 ? ArsenalKind.Own : ArsenalKind.Sword;
             var len = WardenArsenal.NaturalLength(kind, ten ? 0.8f : 1f);
             blades[i] = SpectralBlade.Spawn(kind, -1, len, CrownSlot(i, count), CrownTilt(i, count), transform, 0.2f, true, 0.9f + i * (ten ? 0.055f : 0.09f));
             var t = 0f;
@@ -75,7 +76,8 @@ public sealed partial class BossLord
                 yield return null;
             }
             if (b == null) continue;
-            var aim = WardenHazard.Chest;
+            // Led to where you're running — every third one a step ahead, so a straight sprint never clears the crown.
+            var aim = LeadAim(b.Tip, ten ? 33f : 30f, i % 3 == 2 ? 1.35f : i % 3 == 1 ? 0.6f : 1f);
             var dir = (aim - b.Tip).normalized;
             var g0 = FloorPoint(b.Tip);
             WardenFx.Line(new[] { g0 + Vector3.up * 0.05f, FloorPoint(aim) + FlatDir(dir) * 4f + Vector3.up * 0.05f },
@@ -279,7 +281,8 @@ public sealed partial class BossLord
             t += Time.deltaTime;
             var c = FloorPoint(transform.position);
             ring.SetCircle(c, reach);
-            if (PlayerDistance > 1.6f) MoveFlat(ToPlayerFlat * 2.1f * Time.deltaTime);
+            // A travelling spin — it hunts you across the floor; outrun it sideways, not straight back.
+            if (PlayerDistance > 1.6f) MoveFlat(FlatDir(PredictPlayer(0.4f) - transform.position) * 3.6f * Time.deltaTime);
             if (Time.time >= nextCrescent)
             {
                 nextCrescent = Time.time + 0.2f;
@@ -429,7 +432,7 @@ public sealed partial class BossLord
                 yield return null;
             }
             if (w == null) continue;
-            var aim = WardenHazard.Chest + (playerLoco != null ? Vector3.ProjectOnPlane(playerLoco.ActualPlanarVelocity, Vector3.up) * 0.12f : Vector3.zero);
+            var aim = LeadAim(w.Tip, 30f, i % 2 == 0 ? 1f : 1.3f);
             var dir = (aim - w.Tip).normalized;
             WardenFx.Line(new[] { FloorPoint(w.Tip) + Vector3.up * 0.05f, FloorPoint(aim) + FlatDir(dir) * 4f + Vector3.up * 0.05f },
                           WardenFx.Crimson, 0.06f, 0.3f, 0.04f, 0.5f);

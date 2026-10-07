@@ -111,54 +111,76 @@ public static class ProjectRestartMechanicalEnvironment
         foreach (var root in scene.GetRootGameObjects())
         foreach (var r in root.GetComponentsInChildren<MeshRenderer>(true))
         {
-            var mf = r.GetComponent<MeshFilter>();
-            if (!mf || !mf.sharedMesh || r.gameObject.layer == 5 || r.GetComponentInParent<Animator>() ||
-                r.GetComponentInParent<Health>() || r.GetComponentInParent<PlayerLocomotion>() ||
-                r.GetComponentInParent<ParticleSystem>() || r.name.ToLowerInvariant().Contains("weapon")) { skipped++; continue; }
-            var mats = r.sharedMaterials;
-            if (mats.Length == 0 || mats.Any(m => !m || m.renderQueue > 2450 ||
-                m.shader.name.Contains("Unlit") || m.shader.name.Contains("Traversal") ||
-                m.shader.name.Contains("CharacterPolish"))) { skipped++; continue; }
-            if (mats.All(m => m.shader == shader)) continue;
-            try
-            {
-                var sourceMesh = mf.sharedMesh;
-                string key = AssetKey(sourceMesh);
-                var path = Folder + "/Meshes/" + key + ".asset";
-                var mesh = AssetDatabase.LoadAssetAtPath<Mesh>(path);
-                if (!mesh) { mesh = CreaseMesh(sourceMesh); AssetDatabase.CreateAsset(mesh, path); }
-                bool foliage = IsFoliage(r.transform);
-                for (int i = 0; i < mats.Length; i++)
-                {
-                    var source = mats[i]; var mp = Folder + "/Materials/" + AssetKey(source) + (foliage ? "_Foliage" : "_Structure") + ".mat";
-                    var mat = AssetDatabase.LoadAssetAtPath<Material>(mp);
-                    if (!mat)
-                    {
-                        mat = new Material(shader) { name = source.name + " Mechanical" };
-                        string tex = source.HasProperty("_BaseMap") ? "_BaseMap" : "_MainTex";
-                        if (source.HasProperty(tex)) { mat.SetTexture("_BaseMap", source.GetTexture(tex)); mat.SetTextureScale("_BaseMap", source.GetTextureScale(tex)); mat.SetTextureOffset("_BaseMap", source.GetTextureOffset(tex)); }
-                        mat.SetColor("_BaseColor", source.HasProperty("_BaseColor") ? source.GetColor("_BaseColor") : source.HasProperty("_Color") ? source.GetColor("_Color") : Color.white);
-                        mat.SetFloat("_LineStrength", foliage ? 0.18f : 0.7f);
-                        mat.SetFloat("_LineWidth", foliage ? 0.35f : 0.65f);
-                        mat.SetFloat("_Saturation", foliage ? 0.5f : 0.7f);
-                        if(source.HasProperty("_Cull")) mat.SetFloat("_Cull",source.GetFloat("_Cull"));
-                        if(source.IsKeywordEnabled("_ALPHATEST_ON")) { mat.EnableKeyword("_ALPHATEST_ON"); if(source.HasProperty("_Cutoff"))mat.SetFloat("_Cutoff",source.GetFloat("_Cutoff")); }
-                        if(source.IsKeywordEnabled("_EMISSION") && source.HasProperty("_EmissionColor")) {
-                            mat.SetColor("_EmissionColor",source.GetColor("_EmissionColor"));
-                            if(source.HasProperty("_EmissionMap"))mat.SetTexture("_EmissionMap",source.GetTexture("_EmissionMap"));
-                        }
-                        AssetDatabase.CreateAsset(mat, mp);
-                    }
-                    mats[i] = mat;
-                }
-                Undo.RecordObject(mf, "Crease mesh"); Undo.RecordObject(r, "Environment materials");
-                mf.sharedMesh = mesh; r.sharedMaterials = mats; applied++;
-            }
-            catch (System.Exception e) { Debug.LogWarning("[ArtDirection] Preserved " + r.name + ": " + e.Message); skipped++; }
+            var result = StyleRenderer(r, shader, true);
+            if (result > 0) applied++; else if (result < 0) skipped++;
         }
         Undo.CollapseUndoOperations(group);
         EditorSceneManager.MarkSceneDirty(scene); AssetDatabase.SaveAssets();
         Debug.Log($"[ArtDirection] {applied} static renderers styled; {skipped} protected/unsupported renderers preserved. Creases only, quiet foliage, distance fade. Backup: {backup}. Review before saving.");
+    }
+    /// <summary>The same pass scoped to one tree (no backup, no undo) — the Warden's
+    /// sanctum builder styles the kit it just placed so it matches the styled scene.
+    /// Returns how many renderers were converted.</summary>
+    public static int StyleTree(GameObject root)
+    {
+        var shader = Shader.Find("Souls/Mechanical Environment");
+        if (!shader || ShaderUtil.ShaderHasError(shader) || root == null) return 0;
+        EnsureFolder(Folder); EnsureFolder(Folder + "/Meshes"); EnsureFolder(Folder + "/Materials");
+        var applied = 0;
+        foreach (var r in root.GetComponentsInChildren<MeshRenderer>(true))
+            if (StyleRenderer(r, shader, false) > 0) applied++;
+        AssetDatabase.SaveAssets();
+        return applied;
+    }
+
+    /// <summary>1 = converted, 0 = already styled, -1 = protected/unsupported.</summary>
+    static int StyleRenderer(MeshRenderer r, Shader shader, bool undo)
+    {
+        var mf = r.GetComponent<MeshFilter>();
+        if (!mf || !mf.sharedMesh || r.gameObject.layer == 5 || r.GetComponentInParent<Animator>() ||
+            r.GetComponentInParent<Health>() || r.GetComponentInParent<PlayerLocomotion>() ||
+            r.GetComponentInParent<ParticleSystem>() || r.name.ToLowerInvariant().Contains("weapon")) return -1;
+        var mats = r.sharedMaterials;
+        if (mats.Length == 0 || mats.Any(m => !m || m.renderQueue > 2450 ||
+            m.shader.name.Contains("Unlit") || m.shader.name.Contains("Traversal") ||
+            m.shader.name.Contains("CharacterPolish"))) return -1;
+        if (mats.All(m => m.shader == shader)) return 0;
+        try
+        {
+            var sourceMesh = mf.sharedMesh;
+            string key = AssetKey(sourceMesh);
+            var path = Folder + "/Meshes/" + key + ".asset";
+            var mesh = AssetDatabase.LoadAssetAtPath<Mesh>(path);
+            if (!mesh) { mesh = CreaseMesh(sourceMesh); AssetDatabase.CreateAsset(mesh, path); }
+            bool foliage = IsFoliage(r.transform);
+            for (int i = 0; i < mats.Length; i++)
+            {
+                var source = mats[i]; var mp = Folder + "/Materials/" + AssetKey(source) + (foliage ? "_Foliage" : "_Structure") + ".mat";
+                var mat = AssetDatabase.LoadAssetAtPath<Material>(mp);
+                if (!mat)
+                {
+                    mat = new Material(shader) { name = source.name + " Mechanical" };
+                    string tex = source.HasProperty("_BaseMap") ? "_BaseMap" : "_MainTex";
+                    if (source.HasProperty(tex)) { mat.SetTexture("_BaseMap", source.GetTexture(tex)); mat.SetTextureScale("_BaseMap", source.GetTextureScale(tex)); mat.SetTextureOffset("_BaseMap", source.GetTextureOffset(tex)); }
+                    mat.SetColor("_BaseColor", source.HasProperty("_BaseColor") ? source.GetColor("_BaseColor") : source.HasProperty("_Color") ? source.GetColor("_Color") : Color.white);
+                    mat.SetFloat("_LineStrength", foliage ? 0.18f : 0.7f);
+                    mat.SetFloat("_LineWidth", foliage ? 0.35f : 0.65f);
+                    mat.SetFloat("_Saturation", foliage ? 0.5f : 0.7f);
+                    if(source.HasProperty("_Cull")) mat.SetFloat("_Cull",source.GetFloat("_Cull"));
+                    if(source.IsKeywordEnabled("_ALPHATEST_ON")) { mat.EnableKeyword("_ALPHATEST_ON"); if(source.HasProperty("_Cutoff"))mat.SetFloat("_Cutoff",source.GetFloat("_Cutoff")); }
+                    if(source.IsKeywordEnabled("_EMISSION") && source.HasProperty("_EmissionColor")) {
+                        mat.SetColor("_EmissionColor",source.GetColor("_EmissionColor"));
+                        if(source.HasProperty("_EmissionMap"))mat.SetTexture("_EmissionMap",source.GetTexture("_EmissionMap"));
+                    }
+                    AssetDatabase.CreateAsset(mat, mp);
+                }
+                mats[i] = mat;
+            }
+            if (undo) { Undo.RecordObject(mf, "Crease mesh"); Undo.RecordObject(r, "Environment materials"); }
+            mf.sharedMesh = mesh; r.sharedMaterials = mats;
+            return 1;
+        }
+        catch (System.Exception e) { Debug.LogWarning("[ArtDirection] Preserved " + r.name + ": " + e.Message); return -1; }
     }
     static bool IsFoliage(Transform t)
     {

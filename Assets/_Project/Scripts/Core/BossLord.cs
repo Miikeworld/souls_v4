@@ -53,7 +53,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         public float trackAt;
         public int win;
         public bool effectPlayed, struck, glinted, impacted, held;
-        public float sampledTime, nextRehit, holdUntil;
+        public float sampledTime, holdUntil;
         // Warden additions
         public System.Func<IEnumerator> seq;      // signature attack — runs as a coroutine
         public float maxHeight = 3f;               // melee only connects below this (low sweeps are jumpable)
@@ -62,14 +62,38 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         public float speed = 1f;                   // animator speed while it plays (P3 weight)
         public bool needsSanctum;
         public float reach = 0.55f;                // blade-sweep slack around the player's body
-        public float rehit;                        // >0: the blade may hit again this often inside a window (spins)
         public float force = 1f;                   // pillar strike weight of the swing
         public float holdAt = -1f;                 // anticipation hold: freeze here…
         public Vector2 hold;                       // …for a random time in this range (s)
         public float release = 1.2f;               // animator speed after the hold
-        public Move chain;                         // follow-up string (entered while you stay in chainRange)
-        public float chainRange;
         public string name = "";
+        // Melee rework: strings, tracking, closing the gap.
+        public Link[] links = System.Array.Empty<Link>();  // branches out of this cut (one is rolled at linkAt)
+        public float linkAt = 0.7f;                // normalized time the follow-up decision is made
+        public float linkChance = 0.75f;           // base chance to keep the string going
+        public float warp;                         // metres he may add on top of the clip to reach you
+        public float warpStop = 1.7f;              // where the warp wants him to stop, from your body
+        public float lateTrack = -1f;              // deg/s he still turns once the cut is live (<0 = phase default)
+        public float delayChance;                  // chance this cut gets a held, delayed release
+        public string tag = "";                    // recency family (strings share one)
+        public bool gapCloser, antiAir, turner, special, utility;
+        public float holdAtBase = -1f;
+        public int played;                         // the state actually playing (fallbacks included)
+        public int requiresState;                  // scripted read that only makes sense with this state present
+        public bool linkRolled;
+    }
+
+    /// <summary>One branch out of a cut: where the string can go next, and when.</summary>
+    private sealed class Link
+    {
+        public Move to;
+        public float weight = 1f;
+        public float maxDist = 5f;                 // only while you're still this close
+        public float minDist;                      // …or only once you've backed off this far (gap-closing follow-ups)
+        public Link(Move to, float weight = 1f, float maxDist = 5f, float minDist = 0f)
+        {
+            this.to = to; this.weight = weight; this.maxDist = maxDist; this.minDist = minDist;
+        }
     }
 
     [Header("Identity")]
@@ -165,11 +189,62 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     private static readonly int FinalFallId = Animator.StringToHash("FinalFall");
     private static readonly int DodgeLId = Animator.StringToHash("DodgeL");
     private static readonly int DodgeRId = Animator.StringToHash("DodgeR");
+    // Melee rework — the rest of the Big Sword set (BossLordBase.controller, Setup Warden Fight).
+    private static readonly int SevenCut5Id = Animator.StringToHash("SevenCut5");
+    private static readonly int SevenCut6Id = Animator.StringToHash("SevenCut6");
+    private static readonly int SevenCut7Id = Animator.StringToHash("SevenCut7");
+    private static readonly int FourCut1AId = Animator.StringToHash("FourCut1A");
+    private static readonly int FourCut1BId = Animator.StringToHash("FourCut1B");
+    private static readonly int FourCut2Id = Animator.StringToHash("FourCut2");
+    private static readonly int FourCut3Id = Animator.StringToHash("FourCut3");
+    private static readonly int FourCut4Id = Animator.StringToHash("FourCut4");
+    private static readonly int ThreeCut1Id = Animator.StringToHash("ThreeCut1");
+    private static readonly int ThreeCut2Id = Animator.StringToHash("ThreeCut2");
+    private static readonly int ThreeCut3Id = Animator.StringToHash("ThreeCut3");
+    private static readonly int AshenCleaveId = Animator.StringToHash("AshenCleave");
+    private static readonly int WolfFang1Id = Animator.StringToHash("WolfFang1");
+    private static readonly int WolfFang2Id = Animator.StringToHash("WolfFang2");
+    private static readonly int GraveRendId = Animator.StringToHash("GraveRend");
+    private static readonly int SkyfallId = Animator.StringToHash("Skyfall");
+    private static readonly int UpperCutId = Animator.StringToHash("UpperCut");
+    private static readonly int MoonRushId = Animator.StringToHash("MoonRush");
+    private static readonly int GuardStartId = Animator.StringToHash("GuardStart");
+    private static readonly int GuardLoopId = Animator.StringToHash("GuardLoop");
+    private static readonly int GuardAcceptId = Animator.StringToHash("GuardAccept");
+    private static readonly int GuardAttackId = Animator.StringToHash("GuardAttack");
+    private static readonly int GuardEndId = Animator.StringToHash("GuardEnd");
+    private static readonly int BackStepId = Animator.StringToHash("BackStep");
+    private static readonly int SideStepLId = Animator.StringToHash("SideStepL");
+    private static readonly int SideStepRId = Animator.StringToHash("SideStepR");
+    private static readonly int LeapRiseId = Animator.StringToHash("LeapRise");
+    private static readonly int LeapAirId = Animator.StringToHash("LeapAir");
+    private static readonly int LeapSlamId = Animator.StringToHash("LeapSlam");
+    private static readonly int LeapLandId = Animator.StringToHash("LeapLand");
+    private static readonly int DrawIntroId = Animator.StringToHash("DrawIntro");
+    private static readonly int CastFlickId = Animator.StringToHash("CastFlick");
 
     /// <summary>When a Warden state is missing (setup not re-run) the nearest
     /// older state plays instead — timing falls back to each beat's timeout.</summary>
     private static int Fallback(int id)
     {
+        if (id == SevenCut5Id) return HeavyComboId;
+        if (id == SevenCut6Id || id == ThreeCut2Id || id == AshenCleaveId) return TwinCutId;
+        if (id == SevenCut7Id || id == GraveRendId || id == SkyfallId) return HeavenCutId;
+        if (id == FourCut1AId || id == FourCut1BId || id == ThreeCut1Id || id == UpperCutId) return DrawSlashId;
+        if (id == FourCut2Id) return HeavySweepId;
+        if (id == FourCut3Id || id == ThreeCut3Id) return TwinCut2Id;
+        if (id == FourCut4Id) return HeavySmashId;
+        if (id == WolfFang1Id || id == WolfFang2Id) return WolfFangId;
+        if (id == MoonRushId) return RushDrawId;
+        if (id == GuardAttackId) return CounterCleaveId;
+        if (id == SideStepLId || id == BackStepId) return DodgeLId;
+        if (id == SideStepRId) return DodgeRId;
+        if (id == LeapRiseId) return KingsFallCrouchId;
+        if (id == LeapAirId) return KingsFallHangId;
+        if (id == LeapSlamId) return KingsFallDropId;
+        if (id == LeapLandId) return KingsFallLandId;
+        if (id == DrawIntroId) return GreatswordPullId;
+        if (id == CastFlickId) return CrownRaiseId;
         if (id == CrimsonSweepId || id == TwinCut2Id || id == WolfFangId) return TwinCutId;
         if (id == KingsSpearId || id == GuillotineId) return RushDrawId;
         if (id == BonesunderId || id == CounterCleaveId) return DrawSlashId;
@@ -276,6 +351,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         poise = poiseMax;
         home = transform.position;
         BuildMoves();
+        InitMelee();
         var p = FindFirstObjectByType<PlayerLocomotion>();
         if (p != null)
         {
@@ -314,80 +390,41 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
     private void BuildMoves()
     {
-        // pickMin/pickMax = distance band; trackAt = last normalized point he still steers.
-        // Windows are generous swing gates — the blade's real sweep decides contact.
-        var twin2 = new Move { id = TwinCut2Id, name = "TwinCut2", range = 4f, damage = 22f, cooldown = 0f, trackAt = 0.3f,
-                               windows = new[] { new Vector2(0.32f, 0.66f) } };
-        var draw = new Move { id = DrawSlashId, name = "DrawSlash", range = 4f, arc = 150f, damage = 24f, cooldown = 1.6f,
-                              pickMin = 0f, pickMax = 4.4f, weight = 1.2f, trackAt = 0.3f,
-                              windows = new[] { new Vector2(0.32f, 0.66f) } };
-        var twinCut = new Move { id = TwinCutId, name = "TwinCut", range = 3.8f, arc = 150f, damage = 20f, cooldown = 2.4f,
-                                 pickMin = 0f, pickMax = 4.2f, weight = 1.0f, trackAt = 0.3f,
-                                 windows = new[] { new Vector2(0.32f, 0.66f) }, chain = twin2, chainRange = 4.6f };
-        var heaven = new Move { id = HeavenCutId, name = "HeavenCut", range = 4.2f, arc = 120f, damage = 38f, cooldown = 3.8f,
-                                pickMin = 1.2f, pickMax = 4.6f, weight = 0.8f, trackAt = 0.36f, force = 1.4f,
-                                impact = 1.3f, shake = 0.22f, hitstop = 0.05f,
-                                holdAt = 0.36f, hold = new Vector2(0.35f, 0.95f), release = 1.25f,
-                                windows = new[] { new Vector2(0.40f, 0.52f) } };
-        var rush = new Move { id = RushDrawId, name = "RushDraw", range = 4.5f, arc = 90f, damage = 28f, cooldown = 5f,
-                              pickMin = 4.0f, pickMax = 10f, weight = 1.0f, trackAt = 0.3f,
-                              windows = new[] { new Vector2(0.36f, 0.66f) } };
-        var wolf = new Move { id = WolfFangId, name = "WolfFang", range = 4f, arc = 180f, damage = 22f, cooldown = 6f,
-                              pickMin = 0f, pickMax = 4.6f, weight = 0.7f, trackAt = 0.14f, force = 1.2f,
-                              impact = 1.1f, shake = 0.16f, hitstop = 0.04f,
-                              windows = new[] { new Vector2(0.14f, 0.26f), new Vector2(0.47f, 0.57f) } };
-        var bone = new Move { id = BonesunderId, name = "Bonesunder", range = 3.6f, arc = 130f, damage = 26f, cooldown = 4f,
-                              pickMin = 0f, pickMax = 3.2f, weight = 0.8f, trackAt = 0.15f,
-                              windows = new[] { new Vector2(0.16f, 0.28f) } };
-        // The counter after his side-step: quick, wide, never picked on its own.
-        counter = new Move { id = CounterCleaveId, name = "CounterCleave", range = 4f, arc = 200f, damage = 24f, cooldown = 0f,
-                             trackAt = 0.24f, windows = new[] { new Vector2(0.26f, 0.4f) } };
-        p1Moves = new[] { draw, twinCut, heaven, rush, wolf, bone };
+        // The signature reads (Phase 2 / 3). Long cooldowns, and a shared "special"
+        // budget (BossLordMelee) keeps them as spice between sword strings — the
+        // swordwork is the backbone of every phase.
+        sweep = new Move { name = "CrimsonSweep", seq = CrimsonSweep, cooldown = 14f, pickMin = 0f, pickMax = 6f, weight = 1f, special = true };
+        spear = new Move { name = "KingsSpear", seq = KingsSpear, cooldown = 13f, pickMin = 4f, pickMax = 15f, weight = 1.1f, special = true, gapCloser = true };
+        executioner = new Move { name = "Executioner", seq = ExecutionersDelay, cooldown = 16f, pickMin = 0f, pickMax = 5.2f, weight = 0.9f, special = true };
+        crown = new Move { name = "Crown", seq = CrownOfBlades, cooldown = 26f, pickMin = 3f, pickMax = 22f, weight = 1f, special = true };
+        step = new Move { name = "ShatteredStep", seq = ShatteredStep, cooldown = 11f, pickMin = 5f, pickMax = 20f, weight = 1f, special = true, gapCloser = true };
+        cyclone = new Move { name = "Cyclone", seq = CrimsonCyclone, cooldown = 18f, pickMin = 0f, pickMax = 7f, weight = 0.9f, special = true, turner = true };
+        wheel = new Move { name = "ReapersWheel", seq = ReapersWheel, cooldown = 24f, pickMin = 6f, pickMax = 24f, weight = 0.8f, special = true };
+        impaler = new Move { name = "Impaler", seq = ImpalersRing, cooldown = 24f, pickMin = 3f, pickMax = 20f, weight = 0.8f, special = true };
 
-        // P2 — still in control. Precise cuts stay; every new threat is a read.
-        sweep = new Move { name = "CrimsonSweep", seq = CrimsonSweep, cooldown = 6f, pickMin = 0f, pickMax = 6f, weight = 1f };
-        spear = new Move { name = "KingsSpear", seq = KingsSpear, cooldown = 7f, pickMin = 3f, pickMax = 15f, weight = 1f };
-        executioner = new Move { name = "Executioner", seq = ExecutionersDelay, cooldown = 9f, pickMin = 0f, pickMax = 4.8f, weight = 0.8f };
-        crown = new Move { name = "Crown", seq = CrownOfBlades, cooldown = 16f, pickMin = 2.5f, pickMax = 22f, weight = 1f };
-        step = new Move { name = "ShatteredStep", seq = ShatteredStep, cooldown = 8f, pickMin = 2f, pickMax = 18f, weight = 0.8f };
-        cyclone = new Move { name = "Cyclone", seq = CrimsonCyclone, cooldown = 11f, pickMin = 0f, pickMax = 7f, weight = 0.9f };
-        wheel = new Move { name = "ReapersWheel", seq = ReapersWheel, cooldown = 13f, pickMin = 5f, pickMax = 24f, weight = 0.9f };
-        impaler = new Move { name = "Impaler", seq = ImpalersRing, cooldown = 14f, pickMin = 2f, pickMax = 20f, weight = 0.8f };
-        var draw2 = new Move { id = DrawSlashId, name = "DrawSlash", range = 4f, arc = 150f, damage = 26f, cooldown = 2f,
-                               pickMin = 0f, pickMax = 4.4f, weight = 1.1f, trackAt = 0.3f,
-                               windows = new[] { new Vector2(0.32f, 0.66f) } };
-        var twinB = new Move { id = TwinCutId, name = "TwinCut", range = 3.8f, arc = 150f, damage = 20f, cooldown = 2.6f,
-                               pickMin = 0f, pickMax = 4.2f, weight = 0.9f, trackAt = 0.3f,
-                               windows = new[] { new Vector2(0.32f, 0.66f) }, chain = twin2, chainRange = 4.6f };
-        var heaven2 = new Move { id = HeavenCutId, name = "HeavenCut", range = 4.2f, arc = 120f, damage = 40f, cooldown = 4.5f,
-                                 pickMin = 1.2f, pickMax = 4.6f, weight = 0.6f, trackAt = 0.36f, force = 1.4f,
-                                 impact = 1.3f, shake = 0.22f, hitstop = 0.05f,
-                                 holdAt = 0.36f, hold = new Vector2(0.25f, 1.1f), release = 1.35f,
-                                 windows = new[] { new Vector2(0.40f, 0.52f) } };
-        p2Moves = new[] { draw2, twinB, heaven2, sweep, spear, executioner, cyclone, crown, wheel, impaler, step };
+        twin = new Move { name = "TwinRupture", seq = TwinRupture, cooldown = 15f, pickMin = 0f, pickMax = 7f, weight = 1f, special = true, turner = true };
+        flood = new Move { name = "CrimsonFlood", seq = CrimsonFlood, cooldown = 34f, pickMin = 0f, pickMax = 30f, weight = 0.9f, needsSanctum = true, special = true };
+        ruinous = new Move { name = "RuinousSweep", seq = RuinousSweep, cooldown = 26f, pickMin = 0f, pickMax = 12f, weight = 0.8f, needsSanctum = true, special = true };
+        kingsFall = new Move { name = "KingsFall", seq = KingsFall, cooldown = 20f, pickMin = 6f, pickMax = 28f, weight = 1.1f, special = true, gapCloser = true };
+        splitter = new Move { name = "Worldsplitter", seq = Worldsplitter, cooldown = 18f, pickMin = 3f, pickMax = 22f, weight = 1f, special = true };
+        grave = new Move { name = "GraveOfKings", seq = GraveOfKings, cooldown = 30f, pickMin = 0f, pickMax = 22f, weight = 0.7f, special = true };
+        guillotine = new Move { name = "Guillotine", seq = CrimsonGuillotine, cooldown = 20f, pickMin = 4f, pickMax = 14f, weight = 1f, special = true, gapCloser = true };
+        armory = new Move { name = "Armory", seq = ArmoryOfTheFallen, cooldown = 26f, pickMin = 4f, pickMax = 24f, weight = 0.85f, special = true };
 
-        // P3 — the Core drives a body too heavy for it. Slow, huge, grounded.
-        var heavySweep = new Move { id = HeavySweepId, name = "HeavySweep", range = 5.2f, arc = 200f, damage = 32f, cooldown = 2.6f,
-                                    pickMin = 0f, pickMax = 5.2f, weight = 1.1f, trackAt = 0.36f, speed = 0.8f, shake = 0.12f,
-                                    reach = 0.7f, force = 1.6f, windows = new[] { new Vector2(0.40f, 0.64f) } };
-        var heavySmash = new Move { id = HeavySmashId, name = "HeavySmash", range = 4.8f, arc = 70f, damage = 44f, cooldown = 3.8f,
-                                    pickMin = 1.5f, pickMax = 5.6f, weight = 1f, trackAt = 0.45f, speed = 0.75f,
-                                    impact = 1.6f, shake = 0.32f, hitstop = 0.07f, ringRadius = 9f, ringDamage = 16f,
-                                    reach = 0.7f, force = 2.2f, holdAt = 0.44f, hold = new Vector2(0.2f, 0.6f), release = 1.1f,
-                                    windows = new[] { new Vector2(0.5f, 0.72f) } };
-        var heavyCombo = new Move { id = HeavyComboId, name = "HeavyCombo", range = 4.6f, arc = 150f, damage = 24f, cooldown = 3.4f,
-                                    pickMin = 0f, pickMax = 4.8f, weight = 0.9f, trackAt = 0.26f, speed = 0.8f, shake = 0.12f,
-                                    reach = 0.7f, force = 1.6f,
-                                    windows = new[] { new Vector2(0.28f, 0.45f), new Vector2(0.58f, 0.78f) } };
-        twin = new Move { name = "TwinRupture", seq = TwinRupture, cooldown = 9f, pickMin = 0f, pickMax = 8f, weight = 1f };
-        flood = new Move { name = "CrimsonFlood", seq = CrimsonFlood, cooldown = 24f, pickMin = 0f, pickMax = 30f, weight = 0.9f, needsSanctum = true };
-        ruinous = new Move { name = "RuinousSweep", seq = RuinousSweep, cooldown = 17f, pickMin = 0f, pickMax = 12f, weight = 0.9f, needsSanctum = true };
-        kingsFall = new Move { name = "KingsFall", seq = KingsFall, cooldown = 14f, pickMin = 4f, pickMax = 28f, weight = 1f };
-        splitter = new Move { name = "Worldsplitter", seq = Worldsplitter, cooldown = 13f, pickMin = 3f, pickMax = 22f, weight = 1f };
-        grave = new Move { name = "GraveOfKings", seq = GraveOfKings, cooldown = 21f, pickMin = 0f, pickMax = 22f, weight = 0.8f };
-        guillotine = new Move { name = "Guillotine", seq = CrimsonGuillotine, cooldown = 15f, pickMin = 4f, pickMax = 14f, weight = 1f };
-        armory = new Move { name = "Armory", seq = ArmoryOfTheFallen, cooldown = 18f, pickMin = 3f, pickMax = 24f, weight = 0.85f };
-        p3Moves = new[] { heavySweep, heavySmash, heavyCombo, twin, flood, ruinous, kingsFall, splitter, guillotine, armory, grave };
+        BuildMelee(out var p1, out var p2, out var p3);
+        var p2Special = new[] { sweep, spear, executioner, cyclone, crown, wheel, impaler, step };
+        var p3Special = new[] { twin, flood, ruinous, kingsFall, splitter, guillotine, armory, grave };
+        p1Moves = p1.ToArray();
+        p2Moves = Concat(p2, p2Special);
+        p3Moves = Concat(p3, p3Special);
+    }
+
+    private static Move[] Concat(List<Move> a, Move[] b)
+    {
+        var r = new Move[a.Count + b.Length];
+        a.CopyTo(r, 0);
+        b.CopyTo(r, a.Count);
+        return r;
     }
 
     private Move[] PhaseMoves() => phase == 0 ? p1Moves : phase == 1 ? p2Moves : p3Moves;
@@ -403,8 +440,9 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         blade.FloorY = floorY;
         GameHud.Boss(health, displayName, phaseAt);
         WardenAudio.Bed(true);
-        // His first act is to draw the blade's heat — the fight's "this is the weapon" beat.
-        blade.Glint(1.3f);
+        ResetMelee();
+        // His first act is to draw the blade — the fight's "this is the weapon" beat.
+        StartSequence(DrawIntro());
     }
 
     /// <summary>Souls reset: back to spawn, full HP, dormant, arena whole again.</summary>
@@ -433,7 +471,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         verticalSpeed = 0f;
         exposedUntil = 0f;
         counterReady = false;
-        foreach (var m in p1Moves) m.nextAllowed = 0f;
+        foreach (var list in new[] { p1Moves, p2Moves, p3Moves }) foreach (var m in list) m.nextAllowed = 0f;
+        ResetMelee();
         body.ResetAll();
         SetBodySize(1f);
         SyncSword();
@@ -506,6 +545,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             poiseDamage *= exposedPoiseScale;
             WardenFx.Shards(Chest, 4, 2f, WardenFx.Crimson, false, 0.9f, 0.4f);
         }
+        if (mode == Mode.Chase || mode == Mode.Attack) pressure = Mathf.Min(3f, pressure + 0.6f);
         if (mode == Mode.Sequence && !Exposed) return;
         if (mode == Mode.Dodge) return;
         // In control: sometimes he simply isn't there for the follow-up — and answers.
@@ -588,26 +628,17 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
         if (mode != Mode.Attack && mode != Mode.Sequence) { blade.Swinging = false; blade.Heat = Mathf.MoveTowards(blade.Heat, 0f, dt * 3f); }
 
-        var haste = phase == 1 ? phase2Haste : phase == 2 ? phase3Haste * heavyWalk : 1f;
         switch (mode)
         {
             case Mode.Chase:
-                Face(toPlayer, dt, phase == 2 ? turnSpeed * 0.5f : turnSpeed);
                 if (!roared && phase == 0 && health.Current <= health.Max * phaseAt) { EnterRoar(); break; }
-                if (counterReady && dist <= 4.4f)
+                if (counterReady && dist <= 4.6f)
                 {
                     counterReady = false;
                     EnterMove(counter);
                     break;
                 }
-                if (ReadyAny(dist))
-                {
-                    var move = PickMove(dist);
-                    if (move != null) { EnterMove(move); break; }
-                }
-                SetSpeed(1f);
-                Step(toPlayer.normalized * walkSpeed * haste * dt);
-                if (phase == 2) HeavyStep(dt);
+                TickChase(dt, toPlayer, dist);
                 break;
 
             case Mode.Attack:
@@ -616,7 +647,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
             case Mode.Dodge:
                 if (DodgeDone()) { counterReady = true; ToChase(); break; }
-                Step(transform.right * dodgeSide * dodgeSpeed * dt);
+                Step(transform.right * dodgeSide * dodgeSpeed * Mathf.Lerp(1.6f, 0.4f, Mathf.Clamp01(modeT / 0.55f)) * dt);
+                Face(ToPlayerFlat, dt, 360f);
                 break;
 
             case Mode.Roar:
@@ -691,48 +723,30 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         WardenAudio.Play("thud", transform.position, 0.22f, Random.Range(0.55f, 0.65f));
     }
 
-    private bool ReadyAny(float dist)
-    {
-        foreach (var m in PhaseMoves())
-            if (ReadyInBand(m, dist)) return true;
-        return false;
-    }
-
     private bool ReadyInBand(Move m, float dist)
         => Time.time >= m.nextAllowed && dist >= m.pickMin && dist <= PickReach(m) * 1.15f
-           && (!m.needsSanctum || Sanctum != null);
+           && (!m.needsSanctum || Sanctum != null)
+           && (m.requiresState == 0 || (bossAnimator != null && bossAnimator.HasState(0, m.requiresState)));
 
     private static float PickReach(Move m) => m.pickMax > 0f ? m.pickMax : m.range;
 
-    private Move PickMove(float dist)
-    {
-        var moves = PhaseMoves();
-        var eligible = 0;
-        var total = 0f;
-        foreach (var m in moves) if (ReadyInBand(m, dist)) eligible++;
-        foreach (var m in moves)
-            if (ReadyInBand(m, dist) && !(eligible > 1 && Key(m) == lastMoveId)) total += m.weight;
-        if (total <= 0f) return null;
-        var roll = Random.value * total;
-        foreach (var m in moves)
-        {
-            if (!ReadyInBand(m, dist) || (eligible > 1 && Key(m) == lastMoveId)) continue;
-            roll -= m.weight;
-            if (roll <= 0f) return m;
-        }
-        return null;
-    }
-
     private static int Key(Move m) => m.seq != null ? m.seq.Method.Name.GetHashCode() : m.id;
 
-    private void EnterMove(Move m)
+    private void EnterMove(Move m, bool chained = false)
     {
         current = m;
         lastMoveId = Key(m);
         m.nextAllowed = Time.time + m.cooldown;
+        if (!chained)
+        {
+            chainDepth = 0;
+            NoteMove(m);
+        }
         SetSpeed(0f);
+        ZeroMove();
         if (m.seq != null)
         {
+            if (m.special) nextSpecialAt = Time.time + SpecialGap();
             StartSequence(m.seq());
             return;
         }
@@ -740,11 +754,20 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         m.struck = m.glinted = m.impacted = m.held = false;
         m.effectPlayed = false;
         m.sampledTime = 0f;
-        m.nextRehit = 0f;
+        m.linkRolled = false;
+        // Souls rhythm-breaker: some finishers hang a beat before they come down.
+        m.holdAt = m.holdAtBase;
+        if (m.holdAt < 0f && m.delayChance > 0f && m.windows.Length > 0 && Random.value < m.delayChance * Aggression)
+        {
+            m.holdAt = Mathf.Max(0.05f, m.windows[0].x - 0.07f);
+            m.hold = new Vector2(0.25f, 0.7f);
+            m.release = 1.25f;
+        }
+        warpLeft = m.warp;
         mode = Mode.Attack;
         modeT = 0f;
         blade.Heat = 0f;
-        Play(m.id, 0.15f, m.speed);
+        m.played = Play(m.id, chained ? 0.1f : 0.15f, m.speed);
     }
 
     private void EnterDodge(Vector3 from)
@@ -753,17 +776,20 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         modeT = 0f;
         current = null;
         dodgeSide = transform.InverseTransformDirection(from - transform.position).x < 0f ? 1 : -1;
-        Play(dodgeSide > 0 ? DodgeRId : DodgeLId, 0.1f, 1.2f);
+        dodgePlayed = Play(dodgeSide > 0 ? SideStepRId : SideStepLId, 0.08f, 1.25f);
         WardenFx.Shards(Chest, 8, 2f, WardenFx.Crimson, false, 0.9f, 0.4f, -transform.right * dodgeSide);
+        WardenFx.Dust(transform.position, 3, 0.9f, 0.7f);
+        WardenAudio.Play("swish", Chest, 0.5f, 1.3f);
     }
+
+    private int dodgePlayed;
 
     private bool DodgeDone()
     {
-        if (bossAnimator == null) return modeT >= 0.8f;
+        if (bossAnimator == null || dodgePlayed == 0) return modeT >= 0.6f;
         var info = bossAnimator.GetCurrentAnimatorStateInfo(0);
-        var id = dodgeSide > 0 ? DodgeRId : DodgeLId;
-        if (info.shortNameHash != id) return modeT >= 1.6f;
-        return info.normalizedTime >= 1f || modeT >= 1.6f;
+        if (info.shortNameHash != dodgePlayed) return modeT >= 1.2f;
+        return info.normalizedTime >= 0.82f || modeT >= 1.2f;
     }
 
     private void TickAttack(float dt)
@@ -771,14 +797,16 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         var m = current;
         if (m == null || bossAnimator == null) { EndSwing(); ToChase(); return; }
         var info = bossAnimator.GetCurrentAnimatorStateInfo(0);
-        if (info.shortNameHash != m.id && info.shortNameHash != Fallback(m.id))
+        if (m.played == 0 || info.shortNameHash != m.played)
         {
-            if (modeT > 4f) { EndSwing(); ToChase(); current = null; }
+            // Still crossfading in (or the state is missing entirely): keep closing and turning.
+            if (m.played != 0 && modeT < 0.6f) { TrackAndWarp(m, 0f, 0.5f, false, dt); return; }
+            if (modeT > (m.played == 0 ? 0.6f : 4f)) { EndSwing(); ToChase(); current = null; }
             return;
         }
         var nt = info.normalizedTime;
         var len = Mathf.Max(0.25f, info.length);
-        var trackEnd = m.trackAt > 0f ? m.trackAt : (m.windows.Length > 0 ? m.windows[0].x : 1f);
+        var strikeAt = m.windows.Length > 0 ? m.windows[Mathf.Min(m.win, m.windows.Length - 1)].x : 0.5f;
 
         // Anticipation hold: the pose freezes, the blade heats, he keeps a slow bead on you.
         if (m.holdAt >= 0f && !m.held && nt >= m.holdAt)
@@ -791,12 +819,9 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         var holding = m.held && Time.time < m.holdUntil;
         if (m.held && !holding && bossAnimator.speed < 0.1f) AnimSpeed(m.release * m.speed);
 
-        if (nt < trackEnd || holding)
-        {
-            var to = player.position - transform.position;
-            to.y = 0f;
-            Face(to.normalized, dt, (phase == 2 ? turnSpeed * 0.5f : turnSpeed) * (holding ? 0.25f : 1f));
-        }
+        // Tracking + closing the distance (the clip's own travel still plays on top).
+        var secondsToStrike = Mathf.Max(0f, (strikeAt - nt) * len / Mathf.Max(0.05f, bossAnimator.speed));
+        TrackAndWarp(m, nt, holding ? 0.4f : secondsToStrike, holding, dt);
 
         if (m.win < m.windows.Length)
         {
@@ -804,7 +829,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             var lead = 0.35f / len;
             blade.Heat = holding ? Mathf.MoveTowards(blade.Heat, 1f, dt * 2f)
                                  : Mathf.Max(blade.Heat * (nt > w.y ? 0f : 1f), Mathf.Clamp01((nt - (w.x - lead)) / lead));
-            if (!m.glinted && !holding && nt >= w.x - 0.12f / len) { m.glinted = true; blade.Glint(); }
+            if (!m.glinted && !holding && nt >= w.x - 0.12f / len) { m.glinted = true; blade.Glint(m.damage >= 34f ? 1.25f : 0.9f); }
             blade.Swinging = nt >= w.x - 0.08f / len && nt <= w.y + 0.06f / len;
         }
         else
@@ -825,8 +850,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             }
             if (nt <= w.y)
             {
-                if (!m.struck || (m.rehit > 0f && Time.time >= m.nextRehit))
-                    if (BladeContact(m)) { m.struck = true; m.nextRehit = Time.time + m.rehit; }
+                if (!m.struck && BladeContact(m)) m.struck = true;
                 if (m.impact > 0f && !m.impacted && blade.FloorContactThisSwing)
                     StrikeImpact(m, blade.LastFloorContact);
                 break;
@@ -839,14 +863,18 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         }
         m.sampledTime = nt;
 
-        // Strings: the follow-up comes while you're still inside it.
-        if (m.chain != null && nt >= 0.8f && PlayerDistance <= m.chainRange)
+        // Strings: the next cut comes while you're still inside it — or chases you if you backed off.
+        if (nt >= m.linkAt && !holding)
         {
-            var next = m.chain;
-            EnterMove(next);
-            return;
+            var next = RollLink(m);
+            if (next != null)
+            {
+                chainDepth++;
+                EnterMove(next, chained: true);
+                return;
+            }
         }
-        if (nt >= 1f)
+        if (nt >= 0.94f)
         {
             EndSwing();
             ToChase();
@@ -864,6 +892,9 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     {
         mode = Mode.Chase;
         modeT = 0f;
+        current = null;
+        chainDepth = 0;
+        nextAttackAt = Time.time + RhythmGap();
         EndSwing();
         if (bossAnimator == null) return;
         AnimSpeed(1f);
@@ -873,30 +904,32 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     }
 
     /// <summary>Did his blade connect this frame? The real sword's sweep against your
-    /// body (with a point-blank body check for hugging); the old arc test only when
-    /// no sword is rigged. Lands the hit feedback when it does.</summary>
+    /// body, a point-blank body check for hugging, and a flat "where is the blade
+    /// pointing right now" read that forgives a mis-measured blade axis (the sweep
+    /// is exact only when the fitted sword's axis is). The old arc test only when no
+    /// sword is rigged. Lands the hit feedback (and the heavy shove) when it does.</summary>
     private bool BladeContact(Move m)
     {
         if (playerHealth == null || player == null) return false;
+        var to = player.position - transform.position;
+        var h = player.position.y - floorY;
+        to.y = 0f;
+        var body = cc != null ? cc.radius * transform.lossyScale.x : 0.5f;
         bool hit;
         if (blade.HasBlade)
         {
-            var to = player.position - transform.position;
-            var h = to.y;
-            to.y = 0f;
-            var hugging = blade.TipSpeed >= blade.MinSpeed && to.magnitude <= 1.25f + (cc != null ? cc.radius : 0.5f)
-                          && Vector3.Angle(transform.forward, to) <= 70f && h > -1.5f && h < m.maxHeight;
-            hit = blade.SweepHits(m.reach) || hugging;
+            var fast = blade.TipSpeed >= blade.MinSpeed;
+            var hugging = fast && to.magnitude <= 1.25f + body && Vector3.Angle(transform.forward, to) <= 70f && h > -1.5f && h < m.maxHeight;
+            var tipFlat = Vector3.ProjectOnPlane(blade.Tip - transform.position, Vector3.up);
+            var reach = Mathf.Max(tipFlat.magnitude, blade.Length * 0.85f) + 0.55f + m.reach * 0.5f;
+            var pointing = fast && tipFlat.sqrMagnitude > 0.04f && Vector3.Angle(tipFlat, to) <= 32f
+                           && to.magnitude <= reach && h > -1.5f && h < m.maxHeight;
+            hit = blade.SweepHits(m.reach) || hugging || pointing;
         }
-        else
-        {
-            var to = player.position - transform.position;
-            var h = to.y;
-            to.y = 0f;
-            hit = to.magnitude <= m.range && Vector3.Angle(transform.forward, to) <= m.arc * 0.5f && h > -2f && h < m.maxHeight;
-        }
+        else hit = to.magnitude <= m.range && Vector3.Angle(transform.forward, to) <= m.arc * 0.5f && h > -2f && h < m.maxHeight;
         if (!hit || !WardenHazard.Damage(m.damage, transform.position)) return false;
         Connect(m.damage);
+        if (m.damage >= 30f) WardenHazard.Shove(transform.position, m.damage >= 40f ? 2.4f : 1.5f);
         return true;
     }
 
@@ -954,6 +987,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     private void EndSequenceState()
     {
         if (levitating) EndLevitate();
+        IgnorePlayer(false);
         seqRootMotion = seqMotion = false;
         inTransition = false;
         if (bossAnimator != null)
@@ -1009,7 +1043,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     {
         if (bossAnimator == null) return 0;
         bossAnimator.speed = speed;
-        if (!bossAnimator.HasState(0, id)) id = Fallback(id);
+        // Missing states (setup not re-run) walk down the fallback chain.
+        for (var hop = 0; hop < 4 && id != 0 && !bossAnimator.HasState(0, id); hop++) id = Fallback(id);
         if (id == 0 || !bossAnimator.HasState(0, id)) return 0;
         bossAnimator.CrossFadeInFixedTime(id, fade, 0);
         return id;
@@ -1164,6 +1199,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         if (arc < 359f && Vector3.Angle(transform.forward, to) > arc * 0.5f) return false;
         if (!WardenHazard.Damage(damage, o)) return false;
         Connect(damage);
+        if (damage >= 30f) WardenHazard.Shove(o, damage >= 40f ? 2.4f : 1.5f);
         return true;
     }
 
@@ -1301,7 +1337,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         var c = FloorPoint(transform.position) + Vector3.up * 0.6f;
         WardenFx.Crescent(c, Vector3.up, Quaternion.AngleAxis(-90f, Vector3.up) * FlatDir(transform.forward), 3.4f, 180f, WardenFx.Crimson, 0.14f, 0.3f, 0.07f);
         WardenAudio.Play("slash", transform.position, 0.9f, 0.85f);
-        GroundWave.Spawn(FloorPoint(transform.position), transform.forward, 170f, 9.5f, 13f, 0.85f, 16f, false, 1.2f);
+        GroundWave.Spawn(FloorPoint(transform.position), transform.forward, 240f, 10.5f, 13f, 0.85f, 16f, false, 1.2f);
         WardenFx.Shards(FrontPoint(2f) + Vector3.up * 0.15f, 14, 4f, WardenFx.Crimson, false, 0.9f, 0.45f, transform.right);
         WardenFx.Shake(0.12f);
         yield return Swing(id, 0.33f, 0.43f, 24f, 0.6f, 1.2f, maxHeight: 1.1f);
@@ -1502,7 +1538,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
                 }
                 else g = Sanctum != null ? Sanctum.RandomFloorPoint() : centre + Random.insideUnitSphere * 10f;
                 if (WardenHazard.FloorAt(g + Vector3.up * 2f, 6f, out var floor))
-                    RainStrike.Spawn(floor, 0.75f, 1.25f, 14f, 1f, transform, false, n++ % 4 == 1 ? ArsenalKind.Axe : n % 4 == 3 ? ArsenalKind.Spear : ArsenalKind.Sword);
+                    RainStrike.Spawn(floor, 0.75f, 1.25f, 14f, 1f, transform, false, WardenArsenal.Mixed(n++));
             }
             yield return null;
         }
@@ -1512,7 +1548,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         WardenAudio.Duck(2.2f, 0.02f);
         WardenAudio.Play("hum", giantAt, 1f, 0.9f);
         WardenAudio.Play("armour", Chest, 0.6f, 0.8f);
-        RainStrike.Spawn(giantAt, 1.5f, 4.2f, 42f, 4f, transform, big: true, kind: ArsenalKind.Greatsword);
+        // The last blade is his own, colossal.
+        RainStrike.Spawn(giantAt, 1.5f, 4.2f, 42f, 4f, transform, big: true, kind: WardenArsenal.HasPrefab(ArsenalKind.Own) ? ArsenalKind.Own : ArsenalKind.Greatsword);
         var w = 0f;
         while (w < 2.4f) { w += Time.deltaTime; SpinHalo(halo, centre); yield return null; }
         WardenAudio.Unduck();
@@ -1964,7 +2001,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         {
             var a = startAng + sense * i * Mathf.PI * 2f / 8f;
             var p = FloorPoint(centre + new Vector3(Mathf.Cos(a), 0f, Mathf.Sin(a)) * r);
-            swords.Add(GraveBlade.Spawn(p, 4.2f, 3.3f, 26f, transform));
+            // Colossal copies of his own blade and the old kings' greatswords, alternating.
+            swords.Add(GraveBlade.Spawn(p, 4.2f, 3.3f, 26f, transform, i % 2 == 0 && WardenArsenal.HasPrefab(ArsenalKind.Own) ? ArsenalKind.Own : ArsenalKind.Greatsword));
             yield return Wait(0.12f);
         }
         yield return Wait(0.6f);
@@ -2400,6 +2438,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
     private void SetSpeed(float v)
     {
-        if (bossAnimator != null) bossAnimator.SetFloat(SpeedId, v);
+        if (bossAnimator != null && hasSpeedParam) bossAnimator.SetFloat(SpeedId, v);
     }
 }

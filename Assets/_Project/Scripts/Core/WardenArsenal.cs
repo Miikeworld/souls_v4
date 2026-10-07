@@ -2,9 +2,9 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>The weapon families the Warden can summon. <see cref="Blade"/> is the
-/// procedural faceted blade (always available); the rest are Synty weapons baked
-/// by Tools > Project Restart > Warden > Bake Spectral Arsenal.</summary>
-public enum ArsenalKind { Blade, Sword, Greatsword, Axe, Spear, Halberd, Scythe }
+/// procedural faceted blade (last-resort fallback); <see cref="Own"/> is a copy of
+/// his own sword; the rest are real Synty weapons (<see cref="WardenArmory"/>).</summary>
+public enum ArsenalKind { Blade, Sword, Greatsword, Axe, Spear, Halberd, Scythe, Own }
 
 /// <summary>
 /// The Warden's spectral arsenal: Synty sword / greatsword / axe / spear /
@@ -68,8 +68,33 @@ public static class WardenArsenal
         return list;
     }
 
-    /// <summary>True when this kind can be drawn as a baked Synty ghost.</summary>
-    public static bool Has(ArsenalKind kind) => kind != ArsenalKind.Blade && Variants(kind).Length > 0 && Material != null;
+    /// <summary>True when this kind has a real prefab (armoury) or a baked ghost to draw.</summary>
+    public static bool Has(ArsenalKind kind) => HasPrefab(kind) || (kind != ArsenalKind.Blade && kind != ArsenalKind.Own && Variants(kind).Length > 0 && Material != null);
+
+    /// <summary>True when the armoury holds a real prefab for this kind.</summary>
+    public static bool HasPrefab(ArsenalKind kind)
+    {
+        var a = WardenArmory.Active;
+        if (a == null || kind == ArsenalKind.Blade) return false;
+        foreach (var p in a.For(kind)) if (p != null) return true;
+        return false;
+    }
+
+    /// <summary>A real weapon prefab of <paramref name="kind"/> (variant -1 = random), or null.</summary>
+    public static GameObject Prefab(ArsenalKind kind, int variant)
+    {
+        var a = WardenArmory.Active;
+        if (a == null) return null;
+        var list = a.For(kind);
+        if (list == null || list.Length == 0) return null;
+        if (variant < 0) variant = Random.Range(0, list.Length);
+        for (var i = 0; i < list.Length; i++)
+        {
+            var p = list[(variant + i) % list.Length];
+            if (p != null) return p;
+        }
+        return null;
+    }
 
     /// <summary>A baked unit mesh for <paramref name="kind"/> (variant wraps), or null.</summary>
     public static Mesh Get(ArsenalKind kind, int variant)
@@ -89,15 +114,18 @@ public static class WardenArsenal
         ArsenalKind.Halberd => 2.6f,
         ArsenalKind.Scythe => 2.2f,
         ArsenalKind.Sword => 1.6f,
+        ArsenalKind.Own => 1.9f,
         _ => 1.55f,
     };
 
-    /// <summary>A crown/volley mix: swords mostly, a greatsword or axe for weight.</summary>
-    public static ArsenalKind Mixed(int i) => (i % 5) switch
+    /// <summary>A crown/volley mix: his own blade and swords mostly, a greatsword, axe or spear for weight.</summary>
+    public static ArsenalKind Mixed(int i) => (i % 6) switch
     {
+        0 => ArsenalKind.Own,
         1 => ArsenalKind.Axe,
         3 => ArsenalKind.Greatsword,
         4 => ArsenalKind.Spear,
+        5 => ArsenalKind.Halberd,
         _ => ArsenalKind.Sword,
     };
 }

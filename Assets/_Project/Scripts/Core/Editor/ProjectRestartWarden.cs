@@ -192,6 +192,9 @@ public static class ProjectRestartWarden
         if (forecourt.HasValue && corners != null)
             BuildApproach(root, root.InverseTransformPoint(forecourt.Value), corners.Select(c => root.InverseTransformPoint(c)).ToArray());
         new GameObject(RelocatedMarker).transform.SetParent(root, false);
+        // The kit pass: the same PolygonDungeon dungeon pieces as the ruin level that leads
+        // here (gameplay colliders and roles untouched; art rides each piece's Visual).
+        report.Add(ProjectRestartWardenDress.Dress(root, crystal, PlatformR, OuterR, WallR, WallH, WallT, SlabLen, DoorW, PillarR));
 
         var sanctum = root.gameObject.AddComponent<CoreSanctum>();
         WireSanctum(sanctum, central);

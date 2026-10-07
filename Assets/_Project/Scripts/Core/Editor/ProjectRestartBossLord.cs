@@ -72,6 +72,9 @@ public static class ProjectRestartBossLord
                          ?? AnimatorController.CreateAnimatorControllerAtPath(ControllerPath);
         controller.parameters = System.Array.Empty<AnimatorControllerParameter>();
         controller.AddParameter("Speed", AnimatorControllerParameterType.Float);
+        // Melee rework: 2D locomotion (strafe / walk / run) — BossLord checks these exist.
+        controller.AddParameter("MoveX", AnimatorControllerParameterType.Float);
+        controller.AddParameter("MoveY", AnimatorControllerParameterType.Float);
 
         var sm = controller.layers[0].stateMachine;
         var loco = EnsureState(sm, "Locomotion", BuildLocomotionTree(controller), new Vector3(-300, 0));
@@ -112,6 +115,7 @@ public static class ProjectRestartBossLord
         var dieClip = LoadClip(BigRoot + "4_Damages/6__Die/M_Big_Sword@Damage_Die.FBX", "Damage_Die");
         EnsureState(sm, "Die", Bake(dieClip != null ? dieClip : LoadClip(DieFallbackPath, "dead_02")), new Vector3(-600, 140), 1f);
         EnsureWardenStates(controller, sm);
+        EnsureMeleeStates(sm);
 
         foreach (var s in sm.states) s.state.transitions = System.Array.Empty<AnimatorStateTransition>();
         sm.anyStateTransitions = System.Array.Empty<AnimatorStateTransition>();
@@ -122,22 +126,43 @@ public static class ProjectRestartBossLord
     }
 
     private static BlendTree BuildLocomotionTree(AnimatorController controller)
+        => BuildMoveTree(controller, "BossLordMove", "A", 0.85f, BigRoot + "1_Movements/4__Run/M_Big_Sword@Run_ver_B.FBX", "Run_ver_B", 1f);
+
+    /// <summary>The Warden's 2D locomotion (MoveX = strafe, MoveY = forward: 1 walk,
+    /// 2 run): idle at the centre, the eight-way Big Sword walk around it, the run
+    /// straight ahead — so he can circle you between strings and run you down when
+    /// you keep away. In-place takes, feet-baked like every locomotion clip.</summary>
+    private static BlendTree BuildMoveTree(AnimatorController controller, string name, string walkSet, float walkScale,
+                                           string runPath, string runClip, float runScale)
     {
-        var old = AssetDatabase.LoadAllAssetsAtPath(ControllerPath);
-        foreach (var a in old)
-            if (a is BlendTree bt && bt.name == "BossLordMove") AssetDatabase.RemoveObjectFromAsset(bt);
+        foreach (var a in AssetDatabase.LoadAllAssetsAtPath(ControllerPath))
+            if (a is BlendTree bt && bt.name == name) AssetDatabase.RemoveObjectFromAsset(bt);
         var tree = new BlendTree
         {
-            name = "BossLordMove",
-            blendType = BlendTreeType.Simple1D,
-            blendParameter = "Speed",
+            name = name,
+            blendType = BlendTreeType.FreeformDirectional2D,
+            blendParameter = "MoveX",
+            blendParameterY = "MoveY",
             useAutomaticThresholds = false
         };
-        // The greatsword carry from the first step (Phase 3 slows the same walk further).
-        tree.AddChild(Bake(LoadClip(BigRoot + "1_Movements/1__Idle/M_Big_Sword@Idle.FBX", "Idle")), 0f);
-        tree.AddChild(Bake(LoadClip(BigRoot + "1_Movements/2__Walk/A/M_Big_Sword@Walk_ver_A_Front.FBX", "Walk_ver_A_Front")), 1f);
+        tree.AddChild(Bake(LoadClip(BigRoot + "1_Movements/1__Idle/M_Big_Sword@Idle.FBX", "Idle")), Vector2.zero);
+        var walks = new (string suffix, Vector2 at)[]
+        {
+            ("Front", new Vector2(0f, 1f)), ("Back", new Vector2(0f, -1f)),
+            ("Front_L90", new Vector2(-1f, 0f)), ("Front_R90", new Vector2(1f, 0f)),
+            ("Front_L45", new Vector2(-0.71f, 0.71f)), ("Front_R45", new Vector2(0.71f, 0.71f)),
+            ("Back_L45", new Vector2(-0.71f, -0.71f)), ("Back_R45", new Vector2(0.71f, -0.71f)),
+        };
+        foreach (var (suffix, at) in walks)
+        {
+            var clipName = "Walk_ver_" + walkSet + "_" + suffix;
+            var clip = LoadClip(BigRoot + "1_Movements/2__Walk/" + walkSet + "/M_Big_Sword@" + clipName + ".FBX", clipName);
+            if (clip != null) tree.AddChild(Bake(clip), at);
+        }
+        var run = LoadClip(runPath, runClip);
+        if (run != null) tree.AddChild(Bake(run), new Vector2(0f, 2f));
         var kids = tree.children;
-        kids[1].timeScale = 0.85f;
+        for (var i = 1; i < kids.Length; i++) kids[i].timeScale = kids[i].position.y > 1.5f ? runScale : walkScale;
         tree.children = kids;
         AssetDatabase.AddObjectToAsset(tree, controller);
         return tree;
@@ -189,24 +214,66 @@ public static class ProjectRestartBossLord
         EnsureState(sm, "FinalFall", Bake(LoadClip(BigRoot + "4_Damages/1__Front/M_Big_Sword@Damage_Front_Flying_ver_B_ZeroHeight.FBX", "Damage_Front_Flying_ver_B_ZeroHeight")), new Vector3(2100, 280), 1f);
     }
 
+    // P3: the same eight-way carry on the heavier B walk, slowed; a lumbering jog for the "run".
     private static BlendTree BuildHeavyTree(AnimatorController controller)
+        => BuildMoveTree(controller, "BossLordHeavyMove", "B", 0.72f,
+                         BigRoot + "1_Movements/3__Jogging/B/M_Big_Sword@Jogging_8Way_verB_F.FBX", "Jogging_8Way_verB_F", 0.85f);
+
+    /// <summary>The swordsmanship rework (BossLordMelee): the rest of the Big Sword set
+    /// as named states — the 7/4/3-cut strings, the remaining skills, Revenge Guard,
+    /// dodges, the leap and the draw. Attack takes use the attack-root config (the
+    /// same one the player's big-sword setup applies), stationary takes the feet
+    /// bake, dodges the dodge-root config. HasState-style: re-runs re-point in place.</summary>
+    private static void EnsureMeleeStates(AnimatorStateMachine sm)
     {
-        foreach (var a in AssetDatabase.LoadAllAssetsAtPath(ControllerPath))
-            if (a is BlendTree bt && bt.name == "BossLordHeavyMove") AssetDatabase.RemoveObjectFromAsset(bt);
-        var tree = new BlendTree
+        const string combos = BigRoot + "2_Attacks/";
+        AnimationClip Atk(string folder, string clip) => Root(LoadClip(combos + folder + "/M_Big_Sword@" + clip + ".FBX", clip));
+        AnimationClip Skill(string clip) => Root(LoadClip(BigRoot + "3_Skills/M_Big_Sword@" + clip + ".FBX", clip));
+        AnimationClip Guard(string clip, bool root) =>
+            root ? Root(LoadClip(BigRoot + "5_Revenges/Guard_Revenges/M_Big_Sword@" + clip + ".FBX", clip))
+                 : Bake(LoadClip(BigRoot + "5_Revenges/Guard_Revenges/M_Big_Sword@" + clip + ".FBX", clip));
+        AnimationClip Dodge(string clip) => ProjectRestartCombat.EnsureDodgeRootClip(LoadClip(BigRoot + "1_Movements/8__Dodge/M_Big_Sword@" + clip + ".FBX", clip));
+        void S(string state, AnimationClip clip, float x, float y, float speed = 1f)
         {
-            name = "BossLordHeavyMove",
-            blendType = BlendTreeType.Simple1D,
-            blendParameter = "Speed",
-            useAutomaticThresholds = false
-        };
-        tree.AddChild(Bake(LoadClip(BigRoot + "1_Movements/1__Idle/M_Big_Sword@Idle.FBX", "Idle")), 0f);
-        tree.AddChild(Bake(LoadClip(BigRoot + "1_Movements/2__Walk/A/M_Big_Sword@Walk_ver_A_Front.FBX", "Walk_ver_A_Front")), 1f);
-        var kids = tree.children;
-        kids[1].timeScale = 0.72f;
-        tree.children = kids;
-        AssetDatabase.AddObjectToAsset(tree, controller);
-        return tree;
+            if (clip == null) { Debug.LogWarning("[ProjectRestart] Warden melee state " + state + " skipped — clip missing."); return; }
+            EnsureState(sm, state, clip, new Vector3(x, y), speed);
+        }
+
+        S("SevenCut5", Atk("2__7Combos", "Attack_7Combo_5"), 2400, -420);
+        S("SevenCut6", Atk("2__7Combos", "Attack_7Combo_6"), 2400, -280);
+        S("SevenCut7", Atk("2__7Combos", "Attack_7Combo_7"), 2400, -140);
+        S("FourCut1A", Atk("1__4Combos", "Attack_4Combo_1A"), 2400, 0);
+        S("FourCut1B", Atk("1__4Combos", "Attack_4Combo_1B"), 2400, 140);
+        S("FourCut2", Atk("1__4Combos", "Attack_4Combo_2"), 2400, 280);
+        S("FourCut3", Atk("1__4Combos", "Attack_4Combo_3"), 2400, 420);
+        S("FourCut4", Atk("1__4Combos", "Attack_4Combo_4"), 2400, 560);
+        S("ThreeCut1", Atk("0__3Combos", "Attack_3Combo_1"), 2700, -420);
+        S("ThreeCut2", Atk("0__3Combos", "Attack_3Combo_2"), 2700, -280);
+        S("ThreeCut3", Atk("0__3Combos", "Attack_3Combo_3"), 2700, -140);
+        S("AshenCleave", Skill("Skill_B"), 2700, 0);
+        S("WolfFang1", Skill("Skill_G_1"), 2700, 140);
+        S("WolfFang2", Skill("Skill_G_2"), 2700, 280);
+        S("GraveRend", Skill("Skill_A"), 2700, 420);
+        S("Skyfall", Skill("Skill_I"), 2700, 560);
+        S("MoonRush", Skill("Skill_J"), 3000, -420);
+        S("UpperCut", Root(LoadClip(combos + "5__Upper_Attack/M_Big_Sword@UpperAttack_ZeroHeight.FBX", "UpperAttack_ZeroHeight")), 3000, -280);
+        S("GuardStart", Guard("Revenge_Guard_Start", false), 3000, -140);
+        S("GuardLoop", Guard("Revenge_Guard_Loop", false), 3000, 0);
+        S("GuardAccept", Guard("Revenge_Guard_Accept", false), 3000, 140);
+        S("GuardAttack", Guard("Revenge_Guard_Attack", true), 3000, 280);
+        S("GuardEnd", Guard("Revenge_Guard_End", false), 3000, 420);
+        S("BackStep", Dodge("Dodge_Back"), 3300, -420);
+        S("SideStepL", Dodge("Dodge_Left"), 3300, -280);
+        S("SideStepR", Dodge("Dodge_Right"), 3300, -140);
+        S("LeapRise", Bake(LoadClip(BigRoot + "1_Movements/6__Jump/M_Big_Sword@Jump_Start_ZeroHeight.FBX", "Jump_Start_ZeroHeight")), 3300, 0);
+        S("LeapAir", Bake(LoadClip(BigRoot + "1_Movements/6__Jump/M_Big_Sword@Jump_Loop_ZeroHeight.FBX", "Jump_Loop_ZeroHeight")), 3300, 140);
+        // Same take/config as KingsFallDrop and the player's air strike (left untouched).
+        S("LeapSlam", LoadClip(combos + "4__Jump_Attack/M_Big_Sword@Jump_Attack_Combo_3_ZeroHeight.FBX", "Jump_Attack_Combo_3_ZeroHeight"), 3300, 280);
+        S("LeapLand", Bake(LoadClip(BigRoot + "1_Movements/6__Jump/M_Big_Sword@Jump_End_ZeroHeight.FBX", "Jump_End_ZeroHeight")), 3300, 420);
+        // The opening draw: the pack's own intro flourish (same take as GreatswordPull).
+        S("DrawIntro", LoadClip(BigRoot + "1_Movements/0__Intro/M_Big_Sword@Intro.FBX", "Intro"), 3600, -140);
+        // A quick hand flick for the thrown volley (MagicalKnight keeps its own avatar).
+        S("CastFlick", LoadClip(MkRoot + "atk_energy09_start.fbx", "atk_energy09_start"), 3600, 0, 1.4f);
     }
 
     // ---------- scene ----------

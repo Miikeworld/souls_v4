@@ -195,11 +195,13 @@ public sealed class WardenBody : MonoBehaviour
         Material mat;
         if (srcMat != null)
         {
+            // Scorched, not blacked out: the blade must stay readable in his hand in the
+            // dark sanctum (a near-black copy read as "he isn't holding anything").
             mat = new Material(srcMat) { name = "Warden reforged greatsword (runtime)" };
-            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", new Color(0.3f, 0.26f, 0.29f));
-            if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", new Color(1f, 0.02f, 0.04f));
-            if (mat.HasProperty("_EmissionStrength")) mat.SetFloat("_EmissionStrength", Mathf.Max(1.6f, mat.GetFloat("_EmissionStrength") * 2f));
-            if (mat.HasProperty("_WireTint")) mat.SetColor("_WireTint", new Color(0.02f, 0.01f, 0.02f));
+            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", mat.GetColor("_BaseColor") * new Color(0.8f, 0.68f, 0.7f, 1f));
+            if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", new Color(1f, 0.04f, 0.06f));
+            if (mat.HasProperty("_EmissionStrength")) mat.SetFloat("_EmissionStrength", Mathf.Max(2.2f, mat.GetFloat("_EmissionStrength") * 2.5f));
+            if (mat.HasProperty("_WireTint")) mat.SetColor("_WireTint", new Color(0.05f, 0.01f, 0.02f));
         }
         else mat = SlabMaterial(null);
         mr.sharedMaterial = mat;
