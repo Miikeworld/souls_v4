@@ -36,6 +36,70 @@ public static class ProjectRestartWardenArsenal
         (ArsenalKind.Scythe, new[] { DF + "SM_Wep_Scythe_01.prefab" }),
     };
 
+    /// <summary>The REAL weapons the fight summons (WardenArmory): his own sword plus the
+    /// Synty dark-fantasy, dungeon and dungeon-realms arsenal — instantiated as-is at runtime.</summary>
+    private const string OwnSword = "Assets/_Project/BossPolish/BossSword.prefab";
+    private static readonly (ArsenalKind kind, string[] prefabs)[] ArmorySources =
+    {
+        (ArsenalKind.Sword, new[] { DF + "SM_Wep_Sword_01.prefab", DF + "SM_Wep_Sword_02.prefab", DF + "SM_Wep_Sword_03.prefab",
+                                    DR + "SM_Wep_Sword_Large_01.prefab", DR + "SM_Wep_Sword_Large_04.prefab", DR + "SM_Wep_Sword_Large_07.prefab",
+                                    PD + "SM_Wep_Ornate_Sword_01.prefab", PD + "SM_Wep_Straightsword_01.prefab" }),
+        (ArsenalKind.Greatsword, new[] { PD + "SM_Wep_GreatSword_01.prefab", PD + "SM_Wep_Greatsword_Straight_01.prefab", PD + "SM_Wep_Greatsword_Curved_01.prefab",
+                                         PD + "SM_Wep_Greatsword_Round_01.prefab", DR + "SM_Wep_Sword_Large_10.prefab", DR + "SM_Wep_Sword_Large_12.prefab" }),
+        (ArsenalKind.Axe, new[] { DF + "SM_Wep_Axe_01.prefab", DF + "SM_Wep_Axe_02.prefab", DR + "SM_Wep_Axe_Large_01.prefab",
+                                  DR + "SM_Wep_Axe_Large_03.prefab", DR + "SM_Wep_Axe_Large_05.prefab", PD + "SM_Wep_Ornate_GreatAxe_01.prefab" }),
+        (ArsenalKind.Spear, new[] { DR + "SM_Wep_Spear_01.prefab", DR + "SM_Wep_Spear_04.prefab", DR + "SM_Wep_Spear_06.prefab",
+                                    PD + "SM_Wep_Ornate_Spear_01.prefab", DF + "SM_Wep_Polearm_01.prefab" }),
+        (ArsenalKind.Halberd, new[] { DF + "SM_Wep_Halberd_01.prefab", DF + "SM_Wep_Halberd_02.prefab", PD + "SM_Wep_Halberd_06.prefab" }),
+        (ArsenalKind.Scythe, new[] { DF + "SM_Wep_Scythe_01.prefab" }),
+    };
+
+    /// <summary>Writes Resources/WardenArmory.asset (real prefab references). The repo
+    /// ships it pre-filled; a re-run picks up moved or renamed vendor files.</summary>
+    public static string WriteArmory()
+    {
+        const string path = "Assets/_Project/Resources/" + WardenArmory.ResourceName + ".asset";
+        EnsureFolder("Assets/_Project/Resources");
+        var armory = AssetDatabase.LoadAssetAtPath<WardenArmory>(path);
+        if (armory == null)
+        {
+            armory = ScriptableObject.CreateInstance<WardenArmory>();
+            AssetDatabase.CreateAsset(armory, path);
+        }
+        var missing = new List<string>();
+        GameObject[] Load(string[] paths)
+        {
+            var list = new List<GameObject>();
+            foreach (var p in paths)
+            {
+                var go = AssetDatabase.LoadAssetAtPath<GameObject>(p);
+                if (go != null) list.Add(go); else missing.Add(p);
+            }
+            return list.ToArray();
+        }
+        armory.ownSword = AssetDatabase.LoadAssetAtPath<GameObject>(OwnSword);
+        if (armory.ownSword == null) missing.Add(OwnSword);
+        foreach (var (kind, prefabs) in ArmorySources)
+        {
+            var found = Load(prefabs);
+            switch (kind)
+            {
+                case ArsenalKind.Sword: armory.swords = found; break;
+                case ArsenalKind.Greatsword: armory.greatswords = found; break;
+                case ArsenalKind.Axe: armory.axes = found; break;
+                case ArsenalKind.Spear: armory.spears = found; break;
+                case ArsenalKind.Halberd: armory.halberds = found; break;
+                case ArsenalKind.Scythe: armory.scythes = found; break;
+            }
+        }
+        EditorUtility.SetDirty(armory);
+        AssetDatabase.SaveAssets();
+        return "Warden armory (real weapons): " + armory.swords.Length + " swords, " + armory.greatswords.Length + " greatswords, "
+               + armory.axes.Length + " axes, " + armory.spears.Length + " spears, " + armory.halberds.Length + " halberds, "
+               + armory.scythes.Length + " scythes, own sword " + (armory.ownSword != null ? "ok" : "MISSING")
+               + (missing.Count > 0 ? ". Missing: " + string.Join(", ", missing) : ".");
+    }
+
     [MenuItem("Tools/Project Restart/Warden/Bake Spectral Arsenal")]
     public static void BakeMenu()
     {
@@ -76,7 +140,8 @@ public static class ProjectRestartWardenArsenal
             total += n;
         }
         AssetDatabase.SaveAssets();
-        return $"Spectral arsenal: {total} ghost weapons baked into {OutDir}.\n" + string.Join("\n", lines);
+        return WriteArmory() + "\n" +
+               $"Spectral arsenal (ghost fallback): {total} weapons baked into {OutDir}.\n" + string.Join("\n", lines);
     }
 
     private static Mesh BakeOne(GameObject prefab, ArsenalKind kind, out string note)

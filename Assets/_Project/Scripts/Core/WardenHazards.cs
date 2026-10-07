@@ -61,6 +61,18 @@ public static class WardenHazard
         return hp.Current < before;
     }
 
+    /// <summary>A heavy hit's weight: the player is pushed <paramref name="metres"/> straight
+    /// away from <paramref name="from"/> over <paramref name="seconds"/> (ease-out). Never
+    /// while wall-running or dead — the wall and the death sequence own the body.</summary>
+    public static void Shove(Vector3 from, float metres, float seconds = 0.22f)
+    {
+        if (!Alive || cc == null || metres <= 0f || WallRunning) return;
+        var dir = Vector3.ProjectOnPlane(Feet - from, Vector3.up);
+        if (dir.sqrMagnitude < 1e-4f) dir = -hp.transform.forward;
+        if (!hp.TryGetComponent<WardenShove>(out var s)) s = hp.gameObject.AddComponent<WardenShove>();
+        s.Push(dir.normalized * metres, seconds);
+    }
+
     /// <summary>Closest distance between segment p0–p1 and the player's body axis.</summary>
     public static float SegmentToBody(Vector3 p0, Vector3 p1)
     {
@@ -112,6 +124,43 @@ public static class WardenHazard
     }
 }
 
+/// <summary>Runtime knockback on the player (added by <see cref="WardenHazard.Shove"/>):
+/// an ease-out push through the player's own CharacterController, so walls and
+/// ledges still stop it. Cancels the moment a wall-run, death or the Core leap
+/// (rooted) takes over.</summary>
+public sealed class WardenShove : MonoBehaviour
+{
+    private CharacterController cc;
+    private PlayerState st;
+    private WallRunController wall;
+    private Vector3 total;
+    private float t, dur;
+
+    public void Push(Vector3 displacement, float seconds)
+    {
+        if (cc == null) { cc = GetComponent<CharacterController>(); st = GetComponent<PlayerState>(); wall = GetComponent<WallRunController>(); }
+        total = displacement;
+        dur = Mathf.Max(0.05f, seconds);
+        t = 0f;
+        enabled = true;
+    }
+
+    private void Update()
+    {
+        if (cc == null || !cc.enabled || t >= dur || (st != null && (st.IsDead || st.IsRooted)) || (wall != null && wall.IsWallRunning))
+        {
+            enabled = false;
+            return;
+        }
+        var k0 = t / dur;
+        t = Mathf.Min(dur, t + Time.deltaTime);
+        var k1 = t / dur;
+        // Ease-out: most of the push lands in the first frames.
+        float E(float k) => 1f - (1f - k) * (1f - k);
+        cc.Move(total * (E(k1) - E(k0)));
+    }
+}
+
 /// <summary>A faceted crimson spike punched out of the floor — eruption beat. Pure visual.</summary>
 public sealed class EruptionSpike : MonoBehaviour
 {
@@ -154,15 +203,17 @@ public sealed class EruptionSpike : MonoBehaviour
 }
 
 /// <summary>
-/// A summoned spectral weapon: forms with a chime (shards converge, it scales
-/// in), holds wherever its owner parks it, swells before firing, then flies
-/// straight — never homing — leaving a thin crimson trail, sticks into the
-/// first solid surface and dissolves in slices. One body hit per flight.
-/// <see cref="ArsenalKind.Blade"/> is the procedural faceted blade; every other
-/// kind is a baked Synty weapon (sword, greatsword, axe, spear, halberd, scythe)
-/// drawn as a crimson ghost with a pale wire rim and an ink silhouette
-/// (<see cref="WardenArsenal"/>). Spinning weapons (thrown axes, the wheel)
-/// turn about their middle; their hazard is a sphere around <see cref="Centre"/>.
+/// A summoned weapon: forms with a chime (shards converge, it scales in), holds
+/// wherever its owner parks it, swells before firing, then flies straight —
+/// never homing — leaving a thin crimson trail, sticks into the first solid
+/// surface and breaks apart. One body hit per flight.
+/// The weapon is REAL: a copy of his own sword (<see cref="ArsenalKind.Own"/>) or a
+/// Synty sword / greatsword / axe / spear / halberd / scythe prefab from the
+/// <see cref="WardenArmory"/>, with its own mesh and material — the Core's energy
+/// is only layered on (a hot crimson spine, a trail, an emission swell before it
+/// fires). The baked ghost and the procedural blade are fallbacks for a project
+/// without the armoury. Spinning weapons (thrown axes, the wheel) turn about
+/// their middle; their hazard is a sphere around <see cref="Centre"/>.
 /// </summary>
 public sealed class SpectralBlade : MonoBehaviour
 {
@@ -184,6 +235,11 @@ public sealed class SpectralBlade : MonoBehaviour
 
     private Transform spinner, visual;
     private MeshRenderer rend;
+    private bool real;
+    private readonly List<Renderer> realRends = new List<Renderer>();
+    private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
+    private static readonly int EmissionStrengthId = Shader.PropertyToID("_EmissionStrength");
+    private static readonly Dictionary<Material, Material> summoned = new Dictionary<Material, Material>();
     private MaterialPropertyBlock mpb;
     private TrailRenderer trail;
     private LineRenderer spine;
@@ -226,19 +282,25 @@ public sealed class SpectralBlade : MonoBehaviour
         spinner.SetParent(transform, false);
         visual = new GameObject("Visual").transform;
         visual.SetParent(spinner, false);
-        var baked = WardenArsenal.Get(kind, variant);
-        ghost = baked != null;
-        visual.gameObject.AddComponent<MeshFilter>().sharedMesh = ghost ? baked : WardenFx.BladeMesh;
-        rend = visual.gameObject.AddComponent<MeshRenderer>();
-        rend.sharedMaterial = ghost ? WardenArsenal.Material : WardenFx.GlowMaterial;
-        rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-        rend.receiveShadows = false;
-        visualScale = ghost ? length : length / 1.55f;
-        visual.localScale = Vector3.zero;
         mpb = new MaterialPropertyBlock();
+        var prefab = WardenArsenal.Prefab(kind, variant);
+        real = prefab != null && BuildReal(prefab);
+        Mesh baked = null;
+        if (!real)
+        {
+            baked = WardenArsenal.Get(kind, variant);
+            ghost = baked != null;
+            visual.gameObject.AddComponent<MeshFilter>().sharedMesh = ghost ? baked : WardenFx.BladeMesh;
+            rend = visual.gameObject.AddComponent<MeshRenderer>();
+            rend.sharedMaterial = ghost ? WardenArsenal.Material : WardenFx.GlowMaterial;
+            rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            rend.receiveShadows = false;
+        }
+        visualScale = real ? 1f : ghost ? length : length / 1.55f;
+        visual.localScale = Vector3.zero;
 
         // A thin hot spine down the blade: the weapon reads as a line of danger
-        // even face-on at 640 lines, where the ghost fill is faint by design.
+        // even face-on at 640 lines, and marks it as the Core's, not a prop.
         var sgo = new GameObject("Spine");
         sgo.transform.SetParent(transform, false);
         spine = sgo.AddComponent<LineRenderer>();
@@ -248,11 +310,11 @@ public sealed class SpectralBlade : MonoBehaviour
         spine.numCapVertices = 0;
         spine.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         spine.receiveShadows = false;
-        spine.enabled = ghost;
+        spine.enabled = ghost || real;
 
         var tip = new GameObject("Trail");
         tip.transform.SetParent(visual, false);
-        tip.transform.localPosition = Vector3.up * (ghost ? 0.92f : 1.45f);
+        tip.transform.localPosition = Vector3.up * (real ? length * 0.92f : ghost ? 0.92f : 1.45f);
         trail = tip.AddComponent<TrailRenderer>();
         trail.sharedMaterial = WardenFx.GlowMaterial;
         trail.time = 0.2f;
@@ -267,6 +329,111 @@ public sealed class SpectralBlade : MonoBehaviour
         trail.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         trail.emitting = false;
         State = Phase.Forming;
+    }
+
+    /// <summary>Instantiate the real weapon under the visual, normalised so the grip
+    /// sits at the origin, the blade/haft runs up +Y and the tip (or head) is at
+    /// <see cref="length"/> metres — measured from its mesh bounds, so any Synty pivot
+    /// convention (and his own centimetre-scale sword) lands the same way.</summary>
+    private bool BuildReal(GameObject prefab)
+    {
+        var fit = new GameObject("Fit").transform;
+        fit.SetParent(visual, false);
+        var inst = Instantiate(prefab, fit, false);
+        inst.name = prefab.name;
+        inst.transform.localPosition = Vector3.zero;
+        inst.transform.localRotation = Quaternion.identity;
+        inst.transform.localScale = prefab.transform.localScale;
+        foreach (var c in inst.GetComponentsInChildren<Collider>(true)) Destroy(c);
+        foreach (var rb in inst.GetComponentsInChildren<Rigidbody>(true)) Destroy(rb);
+        foreach (var mb in inst.GetComponentsInChildren<MonoBehaviour>(true)) Destroy(mb);
+        foreach (var l in inst.GetComponentsInChildren<Light>(true)) l.enabled = false;
+        foreach (var ps in inst.GetComponentsInChildren<ParticleSystem>(true)) ps.gameObject.SetActive(false);
+
+        // Bounds in the instance root's frame (no readable mesh needed).
+        var root = inst.transform;
+        var any = false;
+        var min = Vector3.one * float.MaxValue;
+        var max = Vector3.one * float.MinValue;
+        foreach (var mf in inst.GetComponentsInChildren<MeshFilter>(true))
+        {
+            if (mf.sharedMesh == null) continue;
+            var lower = mf.name.ToLowerInvariant();
+            if (lower.Contains("collision") || lower.Contains("lod1") || lower.Contains("lod2")) { mf.gameObject.SetActive(false); continue; }
+            var bb = mf.sharedMesh.bounds;
+            for (var i = 0; i < 8; i++)
+            {
+                var corner = bb.center + Vector3.Scale(bb.extents, new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+                var p = root.InverseTransformPoint(mf.transform.TransformPoint(corner));
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+                any = true;
+            }
+        }
+        if (!any) { Destroy(fit.gameObject); return false; }
+        var size = max - min;
+        var axis = size.x >= size.y && size.x >= size.z ? 0 : size.y >= size.z ? 1 : 2;
+        var reachAll = size[axis];
+        if (reachAll < 0.01f) { Destroy(fit.gameObject); return false; }
+        // Synty hand-held weapons pivot at the grip: the far end is the business end.
+        float tipSign, gripCoord;
+        var nearMin = -min[axis];
+        var nearMax = max[axis];
+        if (min[axis] <= 0.01f * reachAll && max[axis] >= -0.01f * reachAll && Mathf.Min(nearMin, nearMax) < 0.35f * reachAll)
+        {
+            tipSign = nearMax >= nearMin ? 1f : -1f;
+            gripCoord = 0f;
+        }
+        else
+        {
+            tipSign = 1f;
+            gripCoord = min[axis] + 0.12f * reachAll;
+        }
+        var tipCoord = tipSign > 0f ? max[axis] : min[axis];
+        var reach = Mathf.Abs(tipCoord - gripCoord);
+        if (reach < 0.01f) { Destroy(fit.gameObject); return false; }
+        var up = Vector3.zero; up[axis] = tipSign;
+        int a1 = (axis + 1) % 3, a2 = (axis + 2) % 3;
+        var right = Vector3.zero; right[size[a1] >= size[a2] ? a1 : a2] = 1f;
+        var fwd = Vector3.Cross(right, up);
+        var toLocal = Quaternion.Inverse(Quaternion.LookRotation(fwd, up));
+        var grip = (min + max) * 0.5f;
+        grip[axis] = gripCoord;
+        var k = length / reach;
+        fit.localRotation = toLocal;
+        fit.localScale = Vector3.one * k;
+        fit.localPosition = -(toLocal * (grip * k));
+
+        foreach (var r in inst.GetComponentsInChildren<Renderer>(true))
+        {
+            if (r is ParticleSystemRenderer || r is TrailRenderer || r is LineRenderer) continue;
+            var m = r.sharedMaterial;
+            // Legacy Standard (DungeonRealms) renders magenta under URP: re-shade it.
+            if (m != null && m.shader != null && (m.shader.name == "Standard" || m.shader.name.StartsWith("Legacy Shaders") || !m.shader.isSupported))
+                VendorUrp.Fix(r);
+            var mats = r.sharedMaterials;
+            for (var i = 0; i < mats.Length; i++) mats[i] = Summoned(mats[i]);
+            r.sharedMaterials = mats;
+            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+            realRends.Add(r);
+        }
+        return realRends.Count > 0;
+    }
+
+    /// <summary>A URP Lit material with emission switched on (black at rest) so the
+    /// "about to fire" swell can push crimson through a property block; custom
+    /// shaders (his wire-shaded sword) keep their material — their own
+    /// _EmissionStrength carries the swell.</summary>
+    private static Material Summoned(Material src)
+    {
+        if (src == null || !src.HasProperty(EmissionColorId) || src.HasProperty(EmissionStrengthId)) return src;
+        if (summoned.TryGetValue(src, out var m) && m != null) return m;
+        m = new Material(src) { name = src.name + " (summoned)" };
+        m.EnableKeyword("_EMISSION");
+        m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
+        m.SetColor(EmissionColorId, Color.black);
+        summoned[src] = m;
+        return m;
     }
 
     /// <summary>0..1 swell toward white — the "this one fires next" tell.</summary>
@@ -361,6 +528,8 @@ public sealed class SpectralBlade : MonoBehaviour
                 if (d >= 1f) { Destroy(gameObject); return; }
                 alpha = WardenFx.Stepped(1f - d);
                 dissolve = d;
+                // Opaque steel can't fade: it breaks apart — a quick shrink under the shard burst.
+                if (real) visual.localScale = Vector3.one * visualScale * Mathf.Sqrt(Mathf.Max(0f, 1f - d));
                 break;
         }
         if (spinRate != 0f) spinner.localRotation = Quaternion.AngleAxis(spinRate * dt, spinAxis) * spinner.localRotation;
@@ -369,7 +538,21 @@ public sealed class SpectralBlade : MonoBehaviour
 
     private void Paint()
     {
-        if (ghost)
+        if (real)
+        {
+            // Real weapons keep their material; the Core's energy is an emission swell.
+            var e = WardenFx.Crimson * (0.18f + glow * 2.6f);
+            e.a = 1f;
+            foreach (var r in realRends)
+            {
+                if (r == null) continue;
+                r.GetPropertyBlock(mpb);
+                if (r.sharedMaterial != null && r.sharedMaterial.HasProperty(EmissionStrengthId)) mpb.SetFloat(EmissionStrengthId, 1.2f + glow * 3.5f);
+                else mpb.SetColor(EmissionColorId, e);
+                r.SetPropertyBlock(mpb);
+            }
+        }
+        else if (ghost)
         {
             var fill = WardenArsenal.Fill;
             fill = Color.Lerp(fill, new Color(1f, 0.35f, 0.32f, fill.a), glow * 0.5f);
@@ -380,26 +563,28 @@ public sealed class SpectralBlade : MonoBehaviour
             mpb.SetColor(RimId, rim);
             mpb.SetFloat(FadeId, alpha);
             mpb.SetFloat(DissolveId, dissolve);
+            rend.SetPropertyBlock(mpb);
         }
         else
         {
             var c = Color.white * (1f + glow * 1.3f);
             c.a = alpha;
             mpb.SetColor(TintId, c);
+            rend.SetPropertyBlock(mpb);
         }
-        rend.SetPropertyBlock(mpb);
 
         if (!spine.enabled) return;
-        var a = visual.TransformPoint(Vector3.up * 0.08f);
-        var b2 = visual.TransformPoint(Vector3.up * 0.97f);
+        var unit = real ? length : 1f;
+        var a = visual.TransformPoint(Vector3.up * 0.08f * unit);
+        var b2 = visual.TransformPoint(Vector3.up * 0.97f * unit);
         spine.SetPosition(0, a);
         spine.SetPosition(1, b2);
         var form = State == Phase.Forming ? Mathf.Clamp01(t / formTime) : 1f;
-        var w = 0.03f * Mathf.Sqrt(length) * (1f + glow * 0.9f) * form;
+        var w = (real ? 0.022f : 0.03f) * Mathf.Sqrt(length) * (1f + glow * 0.9f) * form;
         spine.startWidth = w;
         spine.endWidth = w * 0.4f;
         var sc = Color.Lerp(WardenFx.Crimson, WardenFx.PaleRed, glow * 0.8f);
-        sc.a = alpha * 0.9f;
+        sc.a = alpha * (real ? 0.75f : 0.9f);
         spine.startColor = spine.endColor = sc;
     }
 
@@ -1117,7 +1302,8 @@ public sealed class WallChase : MonoBehaviour
     {
         var mark = WardenMark.Circle(point, 0.7f, WardenFx.Crimson, 0.07f, 0.2f, 16, normal);
         var from = point + normal * 4f + Vector3.up * 2.5f;
-        var blade = SpectralBlade.Spawn(from, Quaternion.FromToRotation(Vector3.up, (point - from).normalized), 1f, owner, 0.18f, chime: false);
+        var blade = SpectralBlade.Spawn(ArsenalKind.Sword, -1, WardenArsenal.NaturalLength(ArsenalKind.Sword, 0.9f), from,
+                                        Quaternion.FromToRotation(Vector3.up, (point - from).normalized), owner, 0.18f, chime: false);
         var t = 0f;
         while (t < Warn)
         {

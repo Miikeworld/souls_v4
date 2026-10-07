@@ -135,7 +135,8 @@ public sealed class CoreSanctum : MonoBehaviour
             if (mf.name != "Surface" || mf.sharedMesh == null) continue;
             var go = new GameObject("Flood overlay");
             go.transform.SetParent(mf.transform, false);
-            go.transform.localPosition = Vector3.up * 0.025f;
+            // A Surface lowered under kit tiles (Setup Warden Fight dressing) still floods ABOVE the tiles.
+            go.transform.localPosition = Vector3.up * (0.025f - Mathf.Min(0f, mf.transform.localPosition.y));
             go.transform.localScale = new Vector3(1.002f, 1.01f, 1.002f);
             go.AddComponent<MeshFilter>().sharedMesh = mf.sharedMesh;
             var r = go.AddComponent<MeshRenderer>();

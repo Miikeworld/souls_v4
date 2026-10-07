@@ -1,0 +1,50 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2f4cd5a8a66b4ef38360583fd8ee7d99, type: 3}
+  m_Name: WardenArmory
+  m_EditorClassIdentifier: Assembly-CSharp::WardenArmory
+  ownSword: {fileID: 600799165516553594, guid: 1dd9efd59052de947ad1124ed2d90cee, type: 3}
+  swords:
+  - {fileID: 8814540712764912406, guid: 1805d6341d9e84543af925e938a8f160, type: 3}
+  - {fileID: 68131245699349090, guid: 9b42a44743b9a1442bfa1facacf63695, type: 3}
+  - {fileID: 8011566013882336049, guid: 2d1b288c4815e28498d754a794475903, type: 3}
+  - {fileID: 1858868361684802, guid: ba338d75bcdbe5a44a3c09f4f122fad0, type: 3}
+  - {fileID: 1539454938906624, guid: 9079c089da5bbe2408207132d078facf, type: 3}
+  - {fileID: 1032183391035802, guid: 28228c9dc6a08fb4c8b0a118fd620ea0, type: 3}
+  - {fileID: 119060, guid: c17b117a7e676e148b2ee325c1e6041d, type: 3}
+  - {fileID: 148790, guid: 92cd70a481699ac4b93380dc1184f864, type: 3}
+  greatswords:
+  - {fileID: 138470, guid: 630627b9fd11d4340a42d44621ddcfa7, type: 3}
+  - {fileID: 195570, guid: e7196d0541b91bf4f8cab39924cb6d49, type: 3}
+  - {fileID: 155340, guid: e6138525164fc714a9e749b7608ec9b3, type: 3}
+  - {fileID: 169506, guid: 4aeec2a8eb0265641938df66ebefe8cf, type: 3}
+  - {fileID: 1335285506301150, guid: c5bf6d5f525ff8e44bfe8c506ea0c519, type: 3}
+  - {fileID: 1597027068878224, guid: 4b9da6523ac0df74aa7ee1002c6defba, type: 3}
+  axes:
+  - {fileID: 2161958866636166527, guid: e5a4a647c44759040a187fb15a9b6c42, type: 3}
+  - {fileID: 1704641815585625379, guid: e7f370ba4ed1de8459271d4f8d69ee7b, type: 3}
+  - {fileID: 1640061504709328, guid: 3e9cb18c8fcf9f04b88ef01ef0b10e5e, type: 3}
+  - {fileID: 1728559042803038, guid: 3e3449300d4c5784aa8e81ffd458d7e3, type: 3}
+  - {fileID: 1463260349402618, guid: 278760ec1f39bc54893388c173386a23, type: 3}
+  - {fileID: 110228, guid: 28ee7d66c5b18a64b93436da8089e0ca, type: 3}
+  spears:
+  - {fileID: 1188651973590630, guid: 49861bdc4ee2dd544b19a340b871619c, type: 3}
+  - {fileID: 1342814114239492, guid: 6b3de11233b2b3449aeeb35f2e33b8a4, type: 3}
+  - {fileID: 1079069160848960, guid: 25998a962d7d32a47bf38a94e6312b82, type: 3}
+  - {fileID: 100332, guid: a0e8e2ba9cb9e5b498192bf4610b8206, type: 3}
+  - {fileID: 9175539882691541672, guid: ef2e3a3c5b63f18439f2a586fb34a08e, type: 3}
+  halberds:
+  - {fileID: 8803441433320742831, guid: d810d428af101b241a2d092a611cbf46, type: 3}
+  - {fileID: 7699084489293176385, guid: 759227cc6cf94d845a90f63a5aa255c2, type: 3}
+  - {fileID: 143258, guid: c8941989c1aad7f43b8e7fe9931c6ece, type: 3}
+  scythes:
+  - {fileID: 2534750377913445900, guid: 8875e2c829b723643b54932381e8d09f, type: 3}
