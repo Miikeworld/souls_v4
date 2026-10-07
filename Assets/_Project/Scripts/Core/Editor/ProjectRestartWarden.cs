@@ -27,8 +27,9 @@ using UnityEngine;
 /// moves to the sanctum centre; the fog gate moves to its doorway. A re-run keeps
 /// the relocated site (marker child), so it never walks further away.
 /// Re-runnable: the old sanctum is replaced, the scene is backed up first.
-/// Also rebuilds BossLordBase.controller (Warden states) and bakes the spectral
-/// arsenal (Synty weapons → Resources/WardenArsenal ghosts).
+/// Also rebuilds BossLordBase.controller (Warden states, saved + self-checked), bakes the
+/// spectral arsenal (Synty weapons → Resources/WardenArsenal ghosts) and re-seats the
+/// scene's hand sword in his fist (WardenBody.ReseatSword).
 /// Manual, outside Play Mode.
 /// </summary>
 public static class ProjectRestartWarden
@@ -96,8 +97,9 @@ public static class ProjectRestartWarden
         specs.Clear();
 
         ProjectRestartUrpFix.FixAll();
-        ProjectRestartBossLord.BuildController();
-        report.Add("BossLordBase.controller: greatsword strings + Warden Phase 2/3 states ensured.");
+        var controller = ProjectRestartBossLord.BuildController();
+        AssetDatabase.SaveAssets();
+        report.Add(ProjectRestartBossLord.CheckController(controller));
         report.Add(ProjectRestartWardenArsenal.Bake());
 
         var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
@@ -215,6 +217,10 @@ public static class ProjectRestartWarden
         if (sp != null) sp.objectReferenceValue = sanctum;
         bso.ApplyModifiedPropertiesWithoutUndo();
         EditorUtility.SetDirty(boss);
+        // The old FitSword parked his sword ~170 m off the hand — put it back in the fist.
+        var reseat = ProjectRestartBossLord.ReseatHandSword(boss, controller);
+        Debug.Log("[Warden] " + reseat);
+        report.Add(reseat);
 
         EditorSceneManager.MarkSceneDirty(scene);
         if (!EditorSceneManager.SaveScene(scene)) Debug.LogError("[Warden] Scene save failed — review and save manually.");

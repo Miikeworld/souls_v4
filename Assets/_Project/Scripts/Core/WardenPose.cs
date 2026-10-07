@@ -31,12 +31,11 @@ public sealed class WardenPose : MonoBehaviour
     private Vector3 plantPoint;
     private float headLocalY = 1.6f;
     private Quaternion goalToBoneR = Quaternion.identity;
-    private bool goalSampled, offsetKnown;
+    private bool goalSampled, offsetKnown, goalKnown;
     private Quaternion sampledGoalR;
     private Vector3 gripInHand;        // sword pivot in the hand bone's local frame (world-scaled)
     private Quaternion swordInHand = Quaternion.identity;
     private float lean, twist;         // degrees, applied after the pose (spine)
-    private Quaternion leanApplied = Quaternion.identity;
     private Vector3 leanPivot;
 
     public Kind Current => weight > 0.01f ? kind : Kind.None;
@@ -55,7 +54,27 @@ public sealed class WardenPose : MonoBehaviour
     }
 
     /// <summary>The weapon in the right hand (its pivot is the grip, +Y the blade).</summary>
-    public void SetSword(Transform s) => sword = s;
+    public void SetSword(Transform s)
+    {
+        sword = s;
+        // A child of the hand keeps the same hand-local grip in every pose, so it can be read now.
+        if (s != null) LearnGrip();
+    }
+
+    /// <summary>Where the sword's grip sits in the hand. gripInHand is world-sized (a
+    /// rotation-only inverse), so it is compared with the RIG's scale — never multiplied
+    /// by the hand bone's ×100 lossy scale. A grip that isn't in the fist (a bad seat)
+    /// leaves the offset unknown: the hand-at-grip branch drives the pose instead of an
+    /// IK goal yanked toward a far point.</summary>
+    private void LearnGrip()
+    {
+        if (sword == null || handR == null || sword.parent != handR) return;
+        var g = Quaternion.Inverse(handR.rotation) * (sword.position - handR.position);
+        offsetKnown = g.magnitude < 0.4f * Mathf.Max(0.01f, anim.transform.lossyScale.x);
+        if (!offsetKnown) return;
+        gripInHand = g;
+        swordInHand = Quaternion.Inverse(handR.rotation) * sword.rotation;
+    }
 
     /// <summary>Blend into <paramref name="k"/> over <paramref name="blend"/> seconds.</summary>
     public void Set(Kind k, float blend = 0.25f)
@@ -121,7 +140,7 @@ public sealed class WardenPose : MonoBehaviour
         var inv = Quaternion.Inverse(LeanRotation());
         Vector3 Comp(Vector3 p) => leanPivot + inv * (p - leanPivot);
 
-        if (wR > 0f && sword != null && offsetKnown)
+        if (wR > 0f && sword != null && offsetKnown && goalKnown)
         {
             // Sword world rotation: blade along swordDir, flat facing across the body.
             var across = Vector3.Cross(swordDir, frame.forward);
@@ -280,12 +299,8 @@ public sealed class WardenPose : MonoBehaviour
         if (goalSampled && weight <= 0.001f)
         {
             goalToBoneR = Quaternion.Inverse(sampledGoalR) * handR.rotation;
-            if (sword != null && sword.parent == handR)
-            {
-                gripInHand = Quaternion.Inverse(handR.rotation) * (sword.position - handR.position);
-                swordInHand = Quaternion.Inverse(handR.rotation) * sword.rotation;
-                offsetKnown = true;
-            }
+            goalKnown = true;
+            LearnGrip();
         }
         goalSampled = false;
         if (spine != null && (Mathf.Abs(lean) > 0.01f || Mathf.Abs(twist) > 0.01f))

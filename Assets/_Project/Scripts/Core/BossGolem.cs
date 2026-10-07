@@ -302,7 +302,6 @@ public sealed class BossGolem : MonoBehaviour, IRootMotionOwner, IBossEngage
         modeT = 0f;
         current = null;
         if (bossAnimator != null) bossAnimator.CrossFadeInFixedTime(RoarId, 0.2f, 0);
-        GameHud.Toast(displayName + " — AWAKENED");
         ArtFx.Spawn(roarFx, transform, bossAnimator, player);
         var cam = FindFirstObjectByType<PlayerCameraController>();
         if (cam != null) cam.Shake(0.5f);

@@ -17,8 +17,9 @@ using UnityEngine;
 ///       a miss wedges his sword in the stone (the punish).
 ///   P3  Armory of the Fallen: weapons ripped OUT of the arena floor circle him,
 ///       then fire one by one in a spiral.
-/// Every weapon is a Synty mesh drawn as a crimson ghost (WardenArsenal) with the
-/// fight's read: form → glow → path flash → fire.
+/// Every weapon is a real Synty mesh or a copy of his own sword (WardenArmory; the
+/// baked crimson ghosts are only the fallback) with the fight's read: form → glow →
+/// path flash → fire.
 /// </summary>
 public sealed partial class BossLord
 {
@@ -37,8 +38,9 @@ public sealed partial class BossLord
         Play(CrownHoldId, 0.25f, 1f);
         body.SetCore(WardenBody.CoreMode.Glimmer);
         body.Charge(0.35f);
-        WardenFx.Dust(transform.position, 6, 0.6f, 0.8f, null, 1.8f);
-        WardenFx.Shards(transform.position + Vector3.up * 0.1f, 8, 0.6f, WardenFx.StoneCol, true, 1.8f, 2.2f, null, 1.2f);
+        // Gravity lets go under him: a few chips lift off the floor, the stone flakes rise.
+        WardenFx.Chips(FloorPoint(transform.position) + Vector3.up * 0.05f, 6, 1f, Vector3.up * 0.7f, 0.6f, DustChip, 1.5f);
+        WardenFx.Shards(transform.position + Vector3.up * 0.1f, 8, 0.6f, WardenFx.StoneCol, true, 1.3f, 1.4f, null, 1.2f);
         if (ten) cam?.Frame(3f, 0.12f, 0.5f, 6f, 0.6f, 1f);
         yield return LiftTo(0.6f, 0.6f);
 
@@ -236,9 +238,9 @@ public sealed partial class BossLord
     // ================================================================== Crimson Cyclone
 
     /// <summary>He winds up — torso coiled away, blade low behind him, a ring showing
-    /// his reach — then spins, travelling at you, the greatsword cutting crescents
-    /// through the air and sparks off the stone. Back out of the ring or get over it;
-    /// he staggers out of the spin dizzy (punish).</summary>
+    /// his reach — then spins, travelling at you; the greatsword's own trail carries the
+    /// arc and chips fly off its edge (no drawn crescents — the read is the real blade).
+    /// Back out of the ring or get over it; he staggers out of the spin dizzy (punish).</summary>
     private IEnumerator CrimsonCyclone()
     {
         var id = Play(CycloneId, 0.15f, 0.9f);
@@ -253,7 +255,7 @@ public sealed partial class BossLord
         }
         AnimSpeed(0.05f);
         var reach = (blade.HasBlade ? blade.Length : 1.4f) + 1.4f;
-        var ring = WardenMark.Circle(FloorPoint(transform.position), reach, WardenFx.Crimson, 0.07f, 0.05f, 36);
+        var ring = WardenMark.Circle(FloorPoint(transform.position), reach, WardenFx.Crimson, 0.07f, 0.05f, WardenFx.RingSides);
         WardenAudio.Play("armour", Chest, 0.45f, 0.95f);
         t = 0f;
         while (t < 0.4f)
@@ -272,7 +274,7 @@ public sealed partial class BossLord
         blade.Swinging = true;
         seqRootMotion = true;
         var nextHit = 0f;
-        var nextCrescent = 0f;
+        var nextChips = 0f;
         t = 0f;
         while (t < 4f)
         {
@@ -283,11 +285,11 @@ public sealed partial class BossLord
             ring.SetCircle(c, reach);
             // A travelling spin — it hunts you across the floor; outrun it sideways, not straight back.
             if (PlayerDistance > 1.6f) MoveFlat(FlatDir(PredictPlayer(0.4f) - transform.position) * 3.6f * Time.deltaTime);
-            if (Time.time >= nextCrescent)
+            // Emphasis tied to the real blade: chips flung off the tip along its travel.
+            if (Time.time >= nextChips && blade.HasBlade && blade.TipSpeed >= blade.MinSpeed)
             {
-                nextCrescent = Time.time + 0.2f;
-                var from = blade.HasBlade ? FlatDir(blade.Tip - transform.position) : FlatDir(transform.forward);
-                WardenFx.Crescent(c + Vector3.up * 1.0f, Vector3.up, from, reach - 0.6f, 120f, WardenFx.Crimson, 0.1f, 0.22f, 0.05f);
+                nextChips = Time.time + 0.08f;
+                WardenFx.Chips(blade.Tip, 3, 3.2f, blade.TipVelocity.normalized * 0.8f, 0.28f, WardenFx.Crimson, 0.9f);
             }
             if (Time.time >= nextHit && (blade.SweepHits(0.65f) || !blade.HasBlade && PlayerDistance <= reach))
             {
@@ -381,9 +383,11 @@ public sealed partial class BossLord
             grounds[i] = g;
             lengths[i] = len;
             weapons[i] = SpectralBlade.Spawn(kind, -1, len, g - Vector3.up * len, Quaternion.identity, transform, 0.05f, false);
+            // The floor gives one up: a ring tap, red cracks, crimson + dust chips — no puffs or stone chunks.
             WardenFx.Cracks(g, 4, 1.4f, WardenFx.Crimson, 0.15f, 1.2f);
-            WardenFx.Debris(g, 5, 4.5f, 1.1f);
-            WardenFx.Dust(g, 3, 1f, 0.9f);
+            WardenFx.Pulse(g + Vector3.up * 0.04f, Vector3.up, 0.15f, 0.7f, 0.3f, WardenFx.Crimson, 1f);
+            WardenFx.Chips(g + Vector3.up * 0.05f, 6, 3.5f, Vector3.up * 0.6f, 0.45f, WardenFx.CrimsonDeep, 1.1f);
+            WardenFx.Chips(g + Vector3.up * 0.05f, 3, 1.4f, Vector3.up * 0.35f, 0.6f, DustChip, 1.6f);
             WardenAudio.Play("stone", g, 0.6f, Random.Range(0.75f, 0.95f));
             yield return Wait(0.09f, 60f);
         }
