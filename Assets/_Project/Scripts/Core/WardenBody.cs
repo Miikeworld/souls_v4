@@ -142,7 +142,8 @@ public sealed class WardenBody : MonoBehaviour
                 if (d < best) { best = d; seat = c; }
             }
         }
-        var inverted = best <= tolerance;
+        // The true palm sits ~4.5 cm past the wrist; a loose window would accept a wrong candidate.
+        var inverted = best <= 0.12f * scale;
         if (!inverted)
         {
             var fore = anim.GetBoneTransform(HumanBodyBones.RightLowerArm);
@@ -153,7 +154,7 @@ public sealed class WardenBody : MonoBehaviour
         sword.position = seat;
         Debug.LogWarning($"[Warden] {sword.name} was seated {before:F1} m from {hand.name}; reseated {Vector3.Distance(seat, hand.position):F3} m from it " +
                          (inverted ? "(inverted the FitSword double scale)." : "(forearm fallback).") +
-                         " Fix FitSword and re-run Boss Polish 6 to repair the asset itself.");
+                         " Run Tools > Project Restart > Setup Warden Fight (saves the scene seat) and Tools > Boss Polish > 6 Refit boss sword (repairs the prefab) to stop this warning.");
         return true;
     }
 
@@ -321,7 +322,11 @@ public sealed class WardenBody : MonoBehaviour
             mat = new Material(srcMat) { name = "Warden reforged greatsword (runtime)" };
             if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", mat.GetColor("_BaseColor") * new Color(0.8f, 0.68f, 0.7f, 1f));
             if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", new Color(1f, 0.04f, 0.06f));
-            if (mat.HasProperty("_EmissionStrength")) mat.SetFloat("_EmissionStrength", Mathf.Max(2.2f, mat.GetFloat("_EmissionStrength") * 2.5f));
+            // Burning, not blown out: only a modest lift over his P2 blade (1.1 → 1.4) so
+            // WardenBlade's ×2.5 windup heat stays a readable tell (peak ≈ 3.5, the P2 sword's
+            // heated look). The old ×2.5 base rested at P2's full heat and swelled to ~6.9 HDR,
+            // washing the crimson-masked blade (39% of its texture) pale pink under bloom.
+            if (mat.HasProperty("_EmissionStrength")) mat.SetFloat("_EmissionStrength", Mathf.Max(1.4f, mat.GetFloat("_EmissionStrength") * 1.25f));
             if (mat.HasProperty("_WireTint")) mat.SetColor("_WireTint", new Color(0.05f, 0.01f, 0.02f));
         }
         else mat = SlabMaterial(null);

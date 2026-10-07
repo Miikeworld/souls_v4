@@ -70,11 +70,15 @@ public sealed class ShockRing : MonoBehaviour
         var k = Mathf.Clamp01(radius / maxRadius);
         var op = WardenFx.Opacity;
         var inkK = WardenFx.InkStrength;
-        var a = WardenFx.Stepped(1f - k) * op;
+        // A damaging ring stays readable until it reaches maxRadius (it can still hit there):
+        // the front never drops below the 0.5 band. This matches GroundWave. Cosmetic
+        // (damage 0) cinematic/gallery rings keep the full four-band fade-out.
+        var fade = damage > 0f ? 1f - k * 0.75f : 1f - k;
+        var a = WardenFx.Stepped(fade) * op;
         // Bigger wave = wider geometry, never more alpha.
         var w = 0.13f * Mathf.Clamp(Mathf.Sqrt(radius), 1f, 2.2f);
         Draw(front, frontInk, radius, w, a, inkK);
-        Draw(back, backInk, Mathf.Max(0.2f, radius - band), w * 0.55f, WardenFx.Stepped((1f - k) * 0.5f) * op, inkK);
+        Draw(back, backInk, Mathf.Max(0.2f, radius - band), w * 0.55f, WardenFx.Stepped(fade * 0.5f) * op, inkK);
         if ((chipClock -= Time.deltaTime) <= 0f && a > 0f)
         {
             chipClock = 0.07f;

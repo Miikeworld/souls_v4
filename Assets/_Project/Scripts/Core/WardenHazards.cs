@@ -182,15 +182,18 @@ public sealed class WardenShove : MonoBehaviour
 }
 
 /// <summary>A faceted crimson spike punched out of the floor — eruption beat. Pure visual.
-/// Drawn like the player's afterimages (Souls/Afterimage over the wire-format spike):
-/// ink silhouette, crimson rim (pale red for its first two frames), faint fill; it
-/// slices away as it sinks. A Core-sided pulse and two chips mark the punch.</summary>
+/// Drawn in the player's afterimage language (Souls/Afterimage over the wire-format spike):
+/// ink silhouette, crimson rim + wire (pale red for its first two frames) — but over a
+/// deep-crimson BODY, not a ghost's 0.16 fill: it marks where the damage is. It slices
+/// away as it sinks. A Core-sided pulse and two chips mark the punch.</summary>
 public sealed class EruptionSpike : MonoBehaviour
 {
     private float height, radius, life, t;
     private int frames;
     private MeshRenderer rend;
     private MaterialPropertyBlock mpb;
+    // × Stepped fade × Opacity → ~0.33 inside (the ghost fill left ~0.09: a translucent outline).
+    private const float BodyAlpha = 0.6f;
 
     /// <param name="pulse">False skips the base ring (dense rows ring every other spike).</param>
     public static void Spawn(Vector3 at, float height, float radius, float life = 0.55f, bool pulse = true)
@@ -229,8 +232,18 @@ public sealed class EruptionSpike : MonoBehaviour
 
     private void Paint(float sink)
     {
+        var peak = frames++ < 2;
         mpb.Clear();
-        WardenFx.PaintAfterimage(mpb, frames++ < 2 ? WardenFx.PaleRed : WardenFx.Crimson, WardenFx.Stepped(1f - sink), sink * 0.92f);
+        WardenFx.PaintAfterimage(mpb, peak ? WardenFx.PaleRed : WardenFx.Crimson, WardenFx.Stepped(1f - sink), sink * 0.92f);
+        if (rend.sharedMaterial != WardenFx.GlowMaterial)
+        {
+            // A damage object, not a ghost: a deeper-crimson body under the bright rim/wire
+            // (same colour as the rim would erase the facet wire). Ink, rim and the stepped
+            // × Opacity fade stay PaintAfterimage's.
+            var body = peak ? WardenFx.PaleRed : Color.Lerp(WardenFx.Crimson, WardenFx.CrimsonDeep, 0.45f);
+            body.a = BodyAlpha;
+            mpb.SetColor(WardenFx.TintId, body);
+        }
         rend.SetPropertyBlock(mpb);
     }
 }
@@ -660,7 +673,7 @@ public sealed class SpectralBlade : MonoBehaviour
             mpb.SetColor(TintId, fill);
             mpb.SetColor(RimId, rim);
             mpb.SetColor(InkId, ink);
-            mpb.SetFloat(FadeId, alpha);
+            mpb.SetFloat(FadeId, alpha * WardenFx.Opacity);
             mpb.SetFloat(DissolveId, dissolve);
             rend.SetPropertyBlock(mpb);
         }
@@ -712,14 +725,12 @@ public sealed class SpectralBlade : MonoBehaviour
         {
             // The release: a two-frame pale-red peak along the edge.
             col = WardenFx.PaleRed;
-            a = Mathf.Min(1f, a * 1.8f);
             w *= 2f;
         }
         else
         {
             var f = WardenFx.Stepped(flash / FormFlash);
             col = Color.Lerp(WardenFx.Crimson, Color.white, 0.7f * f);
-            a = Mathf.Min(1f, a * (1f + 0.8f * Mathf.Max(g, f)));
             w *= 1f + 0.9f * g + 0.6f * f;
         }
         var on = a > 0.01f;
@@ -735,7 +746,7 @@ public sealed class SpectralBlade : MonoBehaviour
         spineInk.SetPosition(1, to);
         spineInk.startWidth = w * 2.3f;
         spineInk.endWidth = w * 0.9f;
-        var ik = WardenFx.Ink; ik.a = a * WardenFx.InkStrength * (1f + 0.5f * g);
+        var ik = WardenFx.Ink; ik.a = Mathf.Min(1f, a * WardenFx.InkStrength * (1f + 0.5f * g));
         spineInk.startColor = spineInk.endColor = ik;
     }
 
@@ -763,7 +774,7 @@ public sealed class SpectralBlade : MonoBehaviour
             if (near)
             {
                 hitPlayer = true;
-                if (WardenHazard.Damage(damage, from)) WardenFx.Star(p1, WardenFx.Crimson, dir, 1f);
+                if (WardenHazard.Damage(damage, from)) { WardenFx.Star(p1, WardenFx.Crimson, dir, 1f); HitFx.Spawn(p1, dir, 1f, WardenFx.Crimson); }
             }
         }
         transform.position += dir * travel;
@@ -1143,7 +1154,7 @@ public sealed class CrackEruption : MonoBehaviour
 /// An expanding wave on the floor — a full ring (the Twin Rupture / King's Fall
 /// shockwaves: jump it) or a sector (Ruinous Sweep: get on a wall). Drawn in the
 /// player's language: a faceted base line and a crest line at the wave's height
-/// (at most 24 facets round a full circle), both flat crimson over a 2.3x ink band,
+/// (at most 24 facets round a full circle), both flat crimson over a 2.3x ink band, widening with the radius like ShockRing (x sqrt(r), at most 2.2),
 /// stepping out in four bands x Opacity as the ring grows, with crimson chips
 /// kicked up off the front (2-3 per facet every 0.1s, every fourth ink) filling
 /// the height between. Hits once while the band passes the feet.
@@ -1233,8 +1244,12 @@ public sealed class GroundWave : MonoBehaviour
             basePts[i] = p;
             crestPts[i] = p + Vector3.up * height;
         }
-        Paint(bottom, bottomInk, basePts, 0.14f, WardenFx.Glow(col, a));
-        Paint(top, topInk, crestPts, 0.06f, WardenFx.Glow(col, a * 0.75f));
+        // Same width family as ShockRing / WardenFx.Pulse: the stroke widens with the
+        // ring's radius (x sqrt(r), capped x2.2), never its alpha, so the damaging ring
+        // is never thinner than the decorative rings around it.
+        var fam = WardenFx.Family(r);
+        Paint(bottom, bottomInk, basePts, 0.13f * fam, WardenFx.Glow(col, a));
+        Paint(top, topInk, crestPts, 0.06f * fam, WardenFx.Glow(col, a * 0.75f));
 
         if (clock >= nextChip)
         {
@@ -1242,12 +1257,15 @@ public sealed class GroundWave : MonoBehaviour
             nextChip = clock + ChipEvery;
             var kick = Mathf.Clamp(speed * 0.4f, 2f, 5f);
             var lift = height > 1.5f ? 1.3f : 0.7f;
-            for (var i = 0; i < segs; i++)
+            // Scaled by the drawn arc length (≤200/s), spread evenly along the front.
+            var n = Mathf.Clamp(Mathf.RoundToInt(r * arc * Mathf.Deg2Rad * 0.5f), 4, 20);
+            for (var c = 0; c < n; c++)
             {
+                var i = Random.Range(0, segs);
                 var p = Vector3.Lerp(basePts[i], basePts[i + 1], Random.value);
                 var radial = Vector3.ProjectOnPlane(p - centre, Vector3.up).normalized;
-                WardenFx.Chips(p, Random.Range(2, 4), kick, radial * 0.8f + Vector3.up * lift, 0.38f,
-                               i % 4 == 0 ? WardenFx.Ink : col, 1.3f);
+                WardenFx.Chips(p, 1, kick, radial * 0.8f + Vector3.up * lift, 0.38f,
+                               c % 4 == 0 ? WardenFx.Ink : col, 1.3f);
             }
         }
 
@@ -1372,7 +1390,8 @@ public sealed class FloodField : MonoBehaviour
 {
     private CoreSanctum sanctum;
     private Vector3 origin;
-    private float warn, burn, tickDamage, t, nextCrack, nextSpike, nextTick;
+    private float warn, burn, tickDamage, t, nextCrack, nextSpike, nextTick, nextStamp;
+    private int spikes;
     private bool erupting, dischargeWalls;
     private AudioSource rumble;
 
@@ -1412,18 +1431,14 @@ public sealed class FloodField : MonoBehaviour
                 nextCrack = t + 0.22f;
                 var reach = Mathf.Lerp(2f, sanctum != null ? sanctum.OuterRadius : 14f, k);
                 WardenFx.Cracks(origin, 3, reach, WardenFx.Crimson, 0.2f, warn - t + burn * 0.5f + 0.4f);
+                // Elsewhere the floor answers with a crack (the sanctum stamps the warn's sigils).
                 if (sanctum != null && k > 0.35f)
-                {
-                    // Elsewhere the floor answers: a crack and a crimson Core sigil stamped in it.
-                    var at = sanctum.RandomFloorPoint();
-                    WardenFx.Cracks(at, 2, 2.5f, WardenFx.Crimson, 0.25f, warn - t + 0.6f);
-                    WardenFx.Stamp(at + Vector3.up * 0.04f, Vector3.up, Random.Range(0.45f, 0.75f), WardenFx.Crimson, 0.9f);
-                }
+                    WardenFx.Cracks(sanctum.RandomFloorPoint(), 2, 2.5f, WardenFx.Crimson, 0.25f, warn - t + 0.6f);
             }
             if (t >= warn)
             {
                 erupting = true;
-                nextTick = t;
+                nextTick = nextStamp = t;
                 if (sanctum != null) sanctum.SetFlood(1f);
                 WardenAudio.Play("boom", origin, 1f, 0.85f);
                 WardenFx.Shake(0.35f);
@@ -1432,11 +1447,19 @@ public sealed class FloodField : MonoBehaviour
         }
         if (t >= nextSpike)
         {
-            // Half the old density: the ink-rimmed spikes read on their own.
-            nextSpike = t + 0.14f;
+            // Near the old density now each spike has a body; every other one rings its base.
+            nextSpike = t + 0.1f;
             var p = sanctum != null ? sanctum.RandomFloorPoint() : origin + Random.insideUnitSphere * 8f;
-            EruptionSpike.Spawn(p, Random.Range(1.2f, 2.4f), Random.Range(0.3f, 0.5f), 0.45f);
+            EruptionSpike.Spawn(p, Random.Range(1.2f, 2.4f), Random.Range(0.3f, 0.5f), 0.45f, pulse: (spikes++ & 1) == 0);
             if (Random.value < 0.25f) WardenFx.Chips(p + Vector3.up * 0.1f, 2, 1.8f, Vector3.up * 0.9f, 0.5f, WardenFx.Ink);
+        }
+        if (sanctum != null && t >= nextStamp)
+        {
+            // The hurt-floor sigils keep popping while the floor really burns. The sanctum's
+            // own stamps stop at full flood, and a burn calmer than its warning sends nobody
+            // to the purple walls.
+            nextStamp = t + 0.13f;
+            WardenFx.Stamp(sanctum.RandomFloorPoint() + Vector3.up * 0.05f, Vector3.up, Random.Range(0.45f, 0.8f), WardenFx.Crimson, 0.9f);
         }
         if (t >= nextTick)
         {
@@ -1610,7 +1633,7 @@ public sealed class AxeWheel : MonoBehaviour
             if (along >= prev - 0.7f && along <= s + 0.7f && lateral <= 0.75f && rel.y < Height * 0.8f && !WardenHazard.WallRunning)
             {
                 hit = true;
-                if (WardenHazard.Damage(damage, p)) WardenFx.Star(WardenHazard.Chest, WardenFx.Crimson, dir, 1.3f);
+                if (WardenHazard.Damage(damage, p)) { WardenFx.Star(WardenHazard.Chest, WardenFx.Crimson, dir, 1.3f); HitFx.Spawn(WardenHazard.Chest, dir, 1.2f, WardenFx.Crimson); }
             }
         }
         if (s >= lane)

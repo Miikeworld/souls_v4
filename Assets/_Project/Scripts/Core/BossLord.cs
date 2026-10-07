@@ -293,7 +293,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     // and dodges are code-owned so the relay's gravity can't drag him down.
     public bool DriveRootMotion => (mode == Mode.Attack || seqRootMotion) && !levitating;
     // Only an authored leap arc (a rootY table cut) lifts him, and only from its own live instance.
-    public bool AllowRootY => mode == Mode.Attack && current != null && current.rootY && current.played != 0
+    public bool AllowRootY => mode == Mode.Attack && current != null && current.rootY && current.played != 0 && current.played == current.id
                               && bossAnimator != null && FreshInstance(current.played, out _);
 
     // ---------- runtime ----------
@@ -339,6 +339,12 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     private bool Exposed => Time.time < exposedUntil;
     private bool staggerPunish, corePrompt;
     private float punishT, tetherT, edgeChipT;
+    // Debounced "leap armed" for the prompt + tether only (the leap test itself stays latched/raw).
+    private bool promptArmed;
+    private float promptOnT, promptOffT;
+    private LineRenderer tetherLine, tetherInk;
+    private int tetherFrame = -1;
+    private bool tetherArmed;
     // A state (re)started this frame reads time 0 until the animator has run; a crossfade
     // onto the state already playing is verified the next frame (hard restart if ignored).
     private int restartState, restartFrame = -1, verifyState, verifyFrame;
@@ -366,6 +372,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     {
         all.Remove(this);
         if (corePrompt) { corePrompt = false; GameHud.HidePrompt(); }
+        if (tetherLine != null) tetherLine.enabled = tetherInk.enabled = false;
     }
 
     private void Awake()
@@ -421,6 +428,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     private void OnDestroy()
     {
         if (health != null) { health.Damaged -= OnDamaged; health.Died -= OnDied; }
+        if (tetherLine != null) Destroy(tetherLine.gameObject);
+        if (tetherInk != null) Destroy(tetherInk.gameObject);
         WardenAudio.StopLoop(drone);
         WardenAudio.Bed(false);
         Mood(0f);
@@ -539,6 +548,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         // No finale prompt survives a death.
         corePrompt = false;
         GameHud.HidePrompt();
+        ResetLeapRead();
     }
 
     /// <summary>Every Warden back to its spawn — called beside BossGolem.ResetAll.</summary>
@@ -745,6 +755,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
 
     private void LateUpdate()
     {
+        DrawTether();
         // The Core-driven body never walks off the surviving platform.
         if (phase == 2 && Sanctum != null && cc != null && cc.enabled && !levitating)
         {
@@ -880,7 +891,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         dodgeSide = transform.InverseTransformDirection(from - transform.position).x < 0f ? 1 : -1;
         dodgePlayed = Play(dodgeSide > 0 ? SideStepRId : SideStepLId, 0.08f, 1.25f);
         // The player's dodge: an afterimage left at push-off, a few chips flung off.
-        WardenFx.Ghost(BodySkin, WardenFx.Crimson, 0.34f);
+        GhostChain(3, 1f, 0.5f);
         WardenFx.Shards(Chest, 6, 2f, WardenFx.Crimson, false, 0.9f, 0.4f, -transform.right * dodgeSide);
         WardenFx.Dust(transform.position, 2, 0.8f, 0.6f);
         WardenAudio.Play("swish", Chest, 0.5f, 1.3f);
@@ -1116,6 +1127,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         pose?.Clear(0.2f);
         foreach (var src in seqLoops) WardenAudio.StopLoop(src);
         seqLoops.Clear();
+        // The Core leap prompt belongs to the finale sequence — never outlives it.
+        CorePrompt(false);
         // A sequence cut short (posture break, set piece) never leaves him empty-handed.
         if (!health.IsDead && !finishing && !defeated)
         {
@@ -2002,7 +2015,7 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
                 var behind = blade.HasBlade ? FloorPoint(blade.Tip) + Vector3.up * 0.05f
                                             : FloorPoint(transform.position) - FlatDir(transform.forward) * 1.6f + Vector3.up * 0.05f;
                 WardenFx.Sparks(behind, Vector3.up, 2, 3f, -FlatDir(transform.forward) * 0.5f);
-                WardenFx.Shards(behind, 1, 3f, Random.value < 0.3f ? WardenFx.PaleRed : WardenFx.Crimson, false, 0.7f, 0.3f, Vector3.up * 0.5f);
+                WardenFx.Shards(behind, 1, 3f, WardenFx.Crimson, false, 0.7f, 0.3f, Vector3.up * 0.5f);
             }
             if (scrape != null) scrape.transform.position = transform.position;
             yield return null;
@@ -2336,6 +2349,8 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
             var countdown = 6.5f;
             t = 0f;
             tetherT = 0f;
+            ResetLeapRead();
+            leapArmedPrev = false;
             var lit = 0;
             var struck = false;
             while (t < countdown)
@@ -2345,15 +2360,24 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
                 var want = Mathf.Min(5, Mathf.FloorToInt(t / countdown * 5f) + 1);
                 if (want != lit) { lit = want; body.Countdown(lit); body.Charge(lit / 5f); }
                 // The suit's purple tether to the Core; the prompt only while a jump press WOULD leap.
-                CoreTether(Time.deltaTime);
-                CorePrompt(CoreLeapArmed());
-                if (CoreLeapRequested())
+                var armedNow = CoreLeapArmed();
+                var leapRead = SettleLeapRead(armedNow);
+                CoreTether(Time.deltaTime, leapRead);
+                // Latched: a ground press this frame is an ordinary jump (the prompt appears once
+                // airborne); a press made in the air or on a wall leaps. Decide BEFORE touching the
+                // prompt so Show and Hide never land in the same frame.
+                var request = leapArmedPrev && armedNow && playerLoco.JumpAction.WasPressedThisFrame();
+                leapArmedPrev = armedNow;
+                if (request)
                 {
                     CorePrompt(false);
+                    ResetLeapRead();
                     var leap = CoreLeap();
                     while (leap.MoveNext()) yield return leap.Current;
+                    leapArmedPrev = false;
                     if (coreStruck) { struck = true; break; }
                 }
+                else CorePrompt(leapRead);
                 if (CoreStrikeInReach()) { struck = true; break; }
                 yield return null;
             }
@@ -2387,6 +2411,11 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
     }
 
     private bool coreStruck;
+    // Arming as of the previous tick. The finale coroutine resumes after every Update, so a grounded
+    // Space press has already jumped (cc.isGrounded false) when we read it. Only a jump press made
+    // while the player was ALREADY airborne (double jump) or on a wall (wall jump), within reach of
+    // the floating Core, may leap — the suit answers the Core.
+    private bool leapArmedPrev;
 
     private void Heartbeat(ref float timer, float period)
     {
@@ -2397,10 +2426,6 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         Sanctum?.Pulse(0.8f);
         WardenAudio.Play("thump", Chest, 0.9f, 1f);
     }
-
-    /// <summary>A jump press in the air (double jump or wall jump) within reach of
-    /// the floating Core — the suit answers the Core.</summary>
-    private bool CoreLeapRequested() => CoreLeapArmed() && playerLoco.JumpAction.WasPressedThisFrame();
 
     /// <summary>Would a jump press leap right now? Airborne or on a wall, within reach of the Core.</summary>
     private bool CoreLeapArmed()
@@ -2421,19 +2446,82 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
         else GameHud.HidePrompt();
     }
 
-    /// <summary>The diegetic read of the leap: a purple tether drawn from your chest to the
-    /// Core while you're within reach — brighter, with purple chips at your boots, while a
-    /// jump press would carry you there (purple = the suit can use this).</summary>
-    private void CoreTether(float dt)
+    /// <summary>The leap's READ, debounced: raw cc.isGrounded drops out for a frame or two
+    /// while running and blips true mid-fall (PlayerLocomotion masks the same flicker), and
+    /// every GameHud Tab show→hide flip pops a near-opaque squash-out. Arms after 0.08 s
+    /// armed, disarms after 0.12 s disarmed; death disarms at once. UI/tether only —
+    /// the leap request keeps its own latched test.</summary>
+    private bool SettleLeapRead(bool raw)
     {
+        var dt = Time.unscaledDeltaTime;
+        if (!WardenHazard.Alive) { ResetLeapRead(); return false; }
+        if (raw) { promptOnT += dt; promptOffT = 0f; if (promptOnT >= 0.08f) promptArmed = true; }
+        else { promptOffT += dt; promptOnT = 0f; if (promptOffT >= 0.12f) promptArmed = false; }
+        return promptArmed;
+    }
+
+    private void ResetLeapRead() { promptArmed = false; promptOnT = promptOffT = 0f; }
+
+    /// <summary>The diegetic read of the leap: a held purple tether from your chest to the
+    /// Core while you're within reach. It is stamped here every countdown frame and drawn in
+    /// LateUpdate only on stamped frames, so the leap, the strike, a reset or a death drop it
+    /// at once. While a jump press would carry you there (settled read) it is thicker and
+    /// brighter, with purple chips at your boots (purple = the suit can use this).</summary>
+    private void CoreTether(float dt, bool armed)
+    {
+        if (!WardenHazard.Alive || !CoreInRange()) return;
+        tetherFrame = Time.frameCount;
+        tetherArmed = armed;
         tetherT -= dt;
-        if (tetherT > 0f || !WardenHazard.Alive || !CoreInRange()) return;
+        if (tetherT > 0f) return;
         tetherT = 0.15f;
-        var armed = CoreLeapArmed();
-        var col = WardenFx.PurpleBright;
-        col.a = armed ? 1f : 0.45f;
-        WardenFx.Stroke(WardenHazard.Chest, body.CorePosition, col, armed ? 0.07f : 0.035f, 0.22f, 0.4f);
-        if (armed) WardenFx.Chips(WardenHazard.Feet + Vector3.up * 0.1f, 3, 1.2f, Vector3.up * 0.4f, 0.35f, WardenFx.Purple, 1f);
+        if (tetherArmed) WardenFx.Chips(WardenHazard.Feet + Vector3.up * 0.1f, 3, 1.2f, Vector3.up * 0.4f, 0.35f, WardenFx.Purple, 1f);
+    }
+
+    /// <summary>Draws or hides the held Core tether: TraversalGlow over a ×2.3 ink underlay,
+    /// hard caps, alpha popping to full then clicking down in steps (the player's fade).</summary>
+    private void DrawTether()
+    {
+        if (tetherFrame != Time.frameCount || body == null)
+        {
+            if (tetherLine != null && tetherLine.enabled) tetherLine.enabled = tetherInk.enabled = false;
+            return;
+        }
+        if (tetherLine == null)
+        {
+            tetherInk = MakeTetherLine("Warden core tether ink", 0);
+            tetherLine = MakeTetherLine("Warden core tether", 1);
+        }
+        var from = WardenHazard.Chest;
+        var to = body.CorePosition;
+        tetherLine.SetPosition(0, from); tetherLine.SetPosition(1, to);
+        tetherInk.SetPosition(0, from); tetherInk.SetPosition(1, to);
+        var beat = WardenFx.Stepped(1f - 0.6f * Mathf.Repeat(Time.time * (tetherArmed ? 3f : 1.5f), 1f));   // 1 → .75 → .5
+        var a = beat * (tetherArmed ? 1f : 0.7f) * WardenFx.Opacity;
+        var w0 = tetherArmed ? 0.08f : 0.05f;
+        var w1 = w0 * 0.85f;   // perspective already thins the far end; no spike taper
+        tetherLine.startColor = tetherLine.endColor = WardenFx.Glow(WardenFx.PurpleBright, a);
+        tetherLine.startWidth = w0; tetherLine.endWidth = w1;
+        var ink = WardenFx.Ink;
+        ink.a = a * WardenFx.InkStrength;
+        tetherInk.startColor = tetherInk.endColor = ink;
+        tetherInk.startWidth = w0 * 2.3f; tetherInk.endWidth = w1 * 2.3f;
+        tetherLine.enabled = tetherInk.enabled = a > 0.005f;
+    }
+
+    private static LineRenderer MakeTetherLine(string name, int order)
+    {
+        var lr = new GameObject(name).AddComponent<LineRenderer>();   // unparented: the P3 body scale never touches it
+        lr.sharedMaterial = WardenFx.GlowMaterial;
+        lr.useWorldSpace = true;
+        lr.positionCount = 2;
+        lr.numCornerVertices = 0;
+        lr.numCapVertices = 0;
+        lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        lr.receiveShadows = false;
+        lr.sortingOrder = order;   // ink under the coloured stroke
+        lr.enabled = false;
+        return lr;
     }
 
     /// <summary>Already airborne beside the Core (a double jump from below) — an
@@ -2607,6 +2695,9 @@ public sealed partial class BossLord : MonoBehaviour, IRootMotionOwner, IBossEng
                     GameHud.Boss(health, displayName, finaleAt);
                 }
                 health.Revive(finaleAt * 0.9f);
+                WardenAudio.StopLoop(drone);
+                drone = null;
+                finaleDone = false;
                 finalePending = true;
                 break;
         }

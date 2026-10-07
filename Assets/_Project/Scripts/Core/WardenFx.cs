@@ -16,6 +16,7 @@ using UnityEngine;
 /// scene; chips and strokes run on scaled time (a hitstop freezes the debris
 /// mid-flight) — the impact star and the peak play through the freeze, like the player's.
 /// </summary>
+[DefaultExecutionOrder(1000)] // draw pens after WardenSocket (80), WardenBlade (90) and BladeRibbon (100) so impact peaks keep their first frame
 public sealed class WardenFx : MonoBehaviour
 {
     public static readonly Color Crimson = new Color(1f, 0.06f, 0.09f, 1f);
@@ -32,7 +33,12 @@ public sealed class WardenFx : MonoBehaviour
     private const float GlowGain = 1.28f;    // the player's Lerp(1, intensity 1.8, .35): near-flat colour
     private const float RingWidth = 0.075f;  // TraversalEffects.ringWidth
     private const float DustAlpha = 0.55f;   // TraversalEffects' dust chip alpha
-    private const float FreezeScale = 0.05f;
+    // A scale no other time owner writes: the ult burst (WeaponArt.BurstSpec) uses
+    // 0.05 and the player's contact hitstop 0.02. Freeze restores 1x only if the
+    // scale is still this exact value, so a Last Eclipse burst that starts inside a
+    // Warden hitstop is not mistaken for ours, and its world slowdown is not cut
+    // short when the hitstop ends.
+    private const float FreezeScale = 0.047f;
     private const int PenCap = 320, GhostCap = 24;
 
     internal static readonly int TintId = Shader.PropertyToID("_Tint");
@@ -45,6 +51,9 @@ public sealed class WardenFx : MonoBehaviour
     private static Mesh bladeMesh, shardMesh, spikeMesh, discMesh, quadMesh;
     private static TraversalEffects tuning;
     private static float nextTuningLookup;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    static void ResetStatics() { host = null; tuning = null; nextTuningLookup = 0f; }
 
     private Material glow, afterimage;
     private ParticleSystem chipsFall, chipsRise, chipsGather, chipsUnscaled;
@@ -127,8 +136,10 @@ public sealed class WardenFx : MonoBehaviour
     /// <summary>Stroke-width family: 1 at player scale, ~√radius for arena-size marks, capped ×2.2.</summary>
     internal static float Family(float radius) => Mathf.Clamp(Mathf.Sqrt(Mathf.Max(0f, radius)), 1f, 2.2f);
 
-    /// <summary>The highlight beat of a colour: pale red for crimson, white-lifted otherwise (purple stays purple).</summary>
-    private static Color Pale(Color c) => c.r >= c.b ? PaleRed : Color.Lerp(Color.white, c, 0.4f);
+    /// <summary>The highlight beat of a colour (the player's PaleViolet slot): a hot crimson for
+    /// crimson — PaleRed stays reserved for the two-frame impact peak — white-lifted otherwise
+    /// (purple stays purple).</summary>
+    private static Color Pale(Color c) => c.r >= c.b ? Color.Lerp(c, Color.white, 0.3f) : Color.Lerp(Color.white, c, 0.4f);
 
     private static Color Deep(Color c)
     {
@@ -618,7 +629,7 @@ public sealed class WardenFx : MonoBehaviour
         }
     }
 
-    /// <summary>Metal on stone: pale-red and crimson chips thrown off a surface along
+    /// <summary>Metal on stone: white-hot and crimson chips thrown off a surface along
     /// <paramref name="normal"/> (and the blade's travel, via <paramref name="bias"/>).
     /// Stretched sparks stay reserved for blade-on-body contact (HitFx).</summary>
     public static void Sparks(Vector3 point, Vector3 normal, int count, float speed, Vector3? bias = null)
@@ -627,7 +638,7 @@ public sealed class WardenFx : MonoBehaviour
         var n = normal.sqrMagnitude > 1e-4f ? normal.normalized : Vector3.up;
         count = Mathf.Min(count, 16);
         var op = Opacity;
-        var hot = Glow(PaleRed, op);
+        var hot = Glow(Color.white, op);
         var red = Glow(Crimson, op);
         for (var i = 0; i < count; i++)
         {
@@ -1389,7 +1400,7 @@ public sealed class WardenMark : MonoBehaviour
 
     public void SetAlpha(float a) { alpha = Mathf.Clamp01(a); Apply(); }
     public void SetColor(Color c) { col = c; Apply(); }
-    /// <summary>0..1 "about to fire" swell, expressed in four discrete steps.</summary>
+    /// <summary>0..1 "about to fire" swell in four discrete steps: the rim widens and the core/ticks heat toward a hot crimson (pale red stays the impact peak's).</summary>
     public void SetPulse(float k) { pulse = Mathf.Clamp01(k); Apply(); }
 
     public void Release(float fade = 0.15f)
@@ -1433,7 +1444,7 @@ public sealed class WardenMark : MonoBehaviour
         var inkA = a * WardenFx.InkStrength;
         var q = Mathf.Floor(pulse * 4f + 0.001f) / 4f;
         var pop = 0.7f + 0.3f * Mathf.Clamp01(popAge / PopTime);
-        var hot = Color.Lerp(col, WardenFx.PaleRed, q);
+        var hot = Color.Lerp(col, Color.white, 0.3f * q);
         var fa = fillAlpha > 0f ? Mathf.Min(fillAlpha * 0.35f * (1f + 0.5f * q), 0.06f) * WardenFx.Opacity * stepped : 0f;
         fill.enabled = fa > 0.002f;
         if (circle)

@@ -391,9 +391,9 @@ public sealed class WardenBlade : MonoBehaviour
             var fade = Mathf.Clamp01(1f - (now - s.born) / TrailLife);
             var axis = s.b - s.a;
             var len = axis.magnitude;
-            var lip = s.b + (len > 1e-4f ? axis / len : Vector3.up) * 0.035f * Mathf.Clamp(len / 0.9f, 1f, 3f);
+            var lip = s.b + (len > 1e-4f ? axis / len : Vector3.up) * 0.035f * Mathf.Clamp(len / 0.55f, 1f, 3f);
             verts.Add(s.a);
-            verts.Add(Vector3.Lerp(s.a, s.b, 0.9f));
+            verts.Add(Vector3.Lerp(s.a, s.b, 1f - Mathf.Clamp(0.22f / Mathf.Max(len, 0.01f), 0.1f, 0.3f)));
             verts.Add(s.b);
             verts.Add(lip);
             var root = dim; root.a = 0.16f * fade;
