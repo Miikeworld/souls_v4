@@ -6,7 +6,7 @@ Mesh:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: Sword_2
+  m_Name: Warden arsenal Sword (SM_Wep_Sword_Large_07)
   serializedVersion: 12
   m_SubMeshes:
   - serializedVersion: 2
@@ -17,8 +17,8 @@ Mesh:
     firstVertex: 0
     vertexCount: 1248
     localAABB:
-      m_Center: {x: 0, y: 0.40082186, z: -0.000000007450581}
-      m_Extent: {x: 0.14757861, y: 0.59917814, z: 0.048612688}
+      m_Center: {x: 0, y: 0, z: 0}
+      m_Extent: {x: 0, y: 0, z: 0}
   m_Shapes:
     vertices: []
     shapes: []
